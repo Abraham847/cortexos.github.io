@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kronos OS - Download</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bg-lines"></div>
+<div class="container">
+  <header>
+    <div class="logo">
+      <h1>KRONOS <span class="v">v0.1</span></h1>
+      <p class="subtitle">32-bit Protected Mode OS &mdash; FAT12 &bull; x86 &bull; VGA Mode 13h</p>
+    </div>
+    <div class="badge-row">
+      <span class="badge">QEMU</span>
+      <span class="badge">VirtualBox</span>
+      <span class="badge">Floppy</span>
+      <span class="badge">FAT12</span>
+    </div>
+  </header>
+
+  <section class="section" id="downloads">
+    <h2>Download</h2>
+    <div class="card-grid">
+      <div class="card">
+        <div class="card-icon">img</div>
+        <h3>Raw Floppy Image</h3>
+        <p class="card-size">1.44 MB</p>
+        <p class="card-desc">FAT12 floppy image ready to boot. Use <code>dd</code>, Win32DiskImager, or attach directly to a VM.</p>
+        <a href="cortexos.img" class="btn btn-primary" download>Download .img</a>
+      </div>
+      <div class="card">
+        <div class="card-icon">vdi</div>
+        <h3>VirtualBox VDI</h3>
+        <p class="card-size">~2 MB</p>
+        <p class="card-desc">Pre-converted VirtualBox disk image. Attach as floppy or IDE slave.</p>
+        <a href="cortexos.vdi" class="btn" download>Download .vdi</a>
+      </div>
+      <div class="card">
+        <div class="card-icon">zip</div>
+        <h3>Source Code</h3>
+        <p class="card-size">~200 KB</p>
+        <p class="card-desc">Complete kernel, bootloader, build scripts, and NN tools.</p>
+        <a href="kronos-src.zip" class="btn" download>Download Source</a>
+      </div>
+    </div>
+    <div class="tip" style="margin-top:16px">
+      <strong>Note:</strong> These files are build artifacts. Run <code>bash website/prepare_release.sh</code>
+      after <code>bash build_full.sh</code> to generate them. Or build from source using the GitHub repo.
+    </div>
+  </section>
+
+  <section class="section" id="quickstart">
+    <h2>Quick Start</h2>
+    <div class="tabs">
+      <input type="radio" name="tab" id="tab-qemu" checked>
+      <label for="tab-qemu" class="tab-label">QEMU</label>
+      <input type="radio" name="tab" id="tab-vbox">
+      <label for="tab-vbox" class="tab-label">VirtualBox</label>
+      <input type="radio" name="tab" id="tab-real">
+      <label for="tab-real" class="tab-label">Real Hardware</label>
+
+      <div class="tab-content" id="tab-qemu-c">
+        <h3>QEMU (Linux / Windows / macOS)</h3>
+        <pre class="code-block"><span class="prompt">$</span> qemu-system-i386 -fda cortexos.img -m 64</pre>
+        <p>Or with debug output to serial console:</p>
+        <pre class="code-block"><span class="prompt">$</span> qemu-system-i386 -fda cortexos.img -m 64 -serial stdio</pre>
+        <div class="tip">
+          <strong>Tip:</strong> QEMU's BIOS supports INT 13h extensions natively &mdash; the bootloader uses LBA by default.
+        </div>
+      </div>
+
+      <div class="tab-content" id="tab-vbox-c">
+        <h3>VirtualBox Setup</h3>
+        <ol class="steps">
+          <li>Create a new VM: <strong>Type</strong> = <em>Other</em>, <strong>Version</strong> = <em>Other/Unknown</em> (32-bit).</li>
+          <li>Set <strong>RAM</strong> to at least <em>32 MB</em> (64 MB recommended).</li>
+          <li><strong>Storage</strong>: Add a floppy controller, attach <code>cortexos.img</code> or <code>cortexos.vdi</code>.</li>
+          <li>Alternatively, attach the VDI as an <strong>IDE Primary Slave</strong> (set type to <em>Floppy</em> or <em>IDE</em>).</li>
+          <li>In <strong>System &rarr; Motherboard</strong>, enable <em>I/O APIC</em> and <em>Enable EFI (special OS only)</em> if needed.</li>
+          <li>Boot the VM.</li>
+        </ol>
+        <div class="tip">
+          <strong>Note:</strong> VirtualBox floppy mode lacks INT 13h extensions. The bootloader detects this automatically and falls back to CHS addressing &mdash; no configuration needed.
+        </div>
+        <p>You can also convert the image yourself:</p>
+        <pre class="code-block"><span class="prompt">$</span> VBoxManage convertfromraw cortexos.img cortexos.vdi --format VDI</pre>
+      </div>
+
+      <div class="tab-content" id="tab-real-c">
+        <h3>Real Hardware (Floppy / USB)</h3>
+        <p>Write the image to a 1.44 MB floppy disk or USB drive:</p>
+        <h4>Linux</h4>
+        <pre class="code-block"><span class="prompt">$</span> dd if=cortexos.img of=/dev/sdX bs=512 conv=fsync</pre>
+        <h4>Windows</h4>
+        <pre class="code-block"><span class="prompt">&gt;</span> Win32DiskImager.exe cortexos.img \\.\X:</pre>
+        <div class="warning">
+          <strong>Warning:</strong> Make sure to select the correct drive. All data on the target will be destroyed.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="features">
+    <h2>Features</h2>
+    <div class="feature-grid">
+      <div class="feature">
+        <span class="feature-icon">T</span>
+        <div><strong>Terminal</strong> with command history, calculator, file management, and IPC messaging.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">E</span>
+        <div><strong>Text Editor</strong> &mdash; full-screen editor with save/load (Ctrl+S, Ctrl+O, Ctrl+Q).</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">P</span>
+        <div><strong>Paint</strong> &mdash; simple drawing app with 15 colors and variable brush size.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">F</span>
+        <div><strong>FORTH Interpreter</strong> &mdash; stack-based REPL with arithmetic and stack ops.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">N</span>
+        <div><strong>Neural Network</strong> &mdash; create, train, save, and run inference on multi-layer perceptrons.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">D</span>
+        <div><strong>Dataset Manager</strong> &mdash; build and manage training datasets with import/export.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">I</span>
+        <div><strong>IPC</strong> &mdash; inter-process communication between running tasks.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">L</span>
+        <div><strong>Multi-language UI</strong> &mdash; switch between EN, ES, FR, DE, PT with <code>LANG</code> command.</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="commands">
+    <h2>Shell Commands</h2>
+    <div class="cmd-table-wrap">
+      <table class="cmd-table">
+        <tr><td>HELP</td><td>Show this help</td></tr>
+        <tr><td>CALC a+b</td><td>Basic arithmetic</td></tr>
+        <tr><td>INFO</td><td>System information</td></tr>
+        <tr><td>CLEAR</td><td>Clear terminal output</td></tr>
+        <tr><td>DIR</td><td>List files on disk</td></tr>
+        <tr><td>DEL file</td><td>Delete a file</td></tr>
+        <tr><td>REN old new</td><td>Rename a file</td></tr>
+        <tr><td>EDIT file</td><td>Open text editor</td></tr>
+        <tr><td>FORTH</td><td>Start FORTH interpreter</td></tr>
+        <tr><td>PAINT</td><td>Open drawing app</td></tr>
+        <tr><td>NEURAL</td><td>NN training monitor</td></tr>
+        <tr><td>NN ...</td><td>Neural network commands</td></tr>
+        <tr><td>DS ...</td><td>Dataset manager</td></tr>
+        <tr><td>MSG SEND/RECV</td><td>IPC messaging</td></tr>
+        <tr><td>MODEL ...</td><td>Model registry</td></tr>
+        <tr><td>PS</td><td>List tasks</td></tr>
+        <tr><td>LANG ES</td><td>Switch language (EN/ES/FR/DE/PT)</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" id="build">
+    <h2>Build from Source</h2>
+    <p>Requires a cross-compiler (<code>i686-linux-musl-gcc</code>), NASM, Python 3, and Linux/WSL.</p>
+    <pre class="code-block"><span class="prompt">$</span> git clone &lt;repo-url&gt; kronos
+<span class="prompt">$</span> cd kronos
+<span class="prompt">$</span> bash build_full.sh</pre>
+    <p>The script compiles the kernel, assembles the bootloader, and produces <code>cortexos.img</code>.</p>
+  </section>
+
+  <footer>
+    <p>KronOS v0.1 &mdash; x86 32-bit Protected Mode OS</p>
+  </footer>
+</div>
+</body>
+</html>

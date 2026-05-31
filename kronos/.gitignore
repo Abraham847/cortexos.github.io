@@ -1,0 +1,21 @@
+# Build artifacts
+*.o
+*.elf
+*.bin
+*.img
+boot.bin
+kernel/*.o
+kernel.elf
+kernel.bin
+cortexos.img
+
+# OS junk
+Thumbs.db
+.DS_Store
+*.swp
+*.swo
+
+# Temp files
+test_write.tmp
+*.pyc
+__pycache__/
