@@ -776,6 +776,7 @@ kb_head: dd 0
 kb_tail: dd 0
 kb_shift: db 0
 kb_caps: db 0
+kb_dead: db 0
 
 kb_init:
     pushad
@@ -783,6 +784,7 @@ kb_init:
     mov dword [kb_tail], 0
     mov byte [kb_shift], 0
     mov byte [kb_caps], 0
+    mov byte [kb_dead], 0
     popad
     ret
 
@@ -815,12 +817,23 @@ kb_handler:
     mov al, [scancode_shift + eax]
 .no_shift:
     test byte [kb_caps], 1
-    jz .store
+    jz .check_dead_key
     cmp al, 'a'
-    jb .store
+    jb .check_dead_key
     cmp al, 'z'
-    ja .store
+    ja .check_dead_key
     sub al, 32
+.check_dead_key:
+    cmp al, 39
+    je .set_dead_acute
+    cmp al, 34
+    je .set_dead_umlaut
+    cmp al, 96
+    je .set_dead_grave
+    cmp al, 126
+    je .set_dead_tilde
+    cmp byte [kb_dead], 0
+    jne .try_combo
 .store:
     mov edi, [kb_head]
     mov [kb_buffer + edi], al
@@ -828,6 +841,110 @@ kb_handler:
     and edi, 255
     mov [kb_head], edi
     jmp .done
+.set_dead_acute:
+    mov byte [kb_dead], 39
+    jmp .done
+.set_dead_umlaut:
+    mov byte [kb_dead], 34
+    jmp .done
+.set_dead_grave:
+    mov byte [kb_dead], 96
+    jmp .done
+.set_dead_tilde:
+    mov byte [kb_dead], 126
+    jmp .done
+.try_combo:
+    movzx ebx, al
+    movzx eax, byte [kb_dead]
+    mov byte [kb_dead], 0
+    cmp al, bl
+    je .store
+    ; Convert vowel to lowercase for comparison; set dl=1 if was uppercase
+    xor edx, edx
+    cmp bl, 'A'
+    jb .vow_low
+    cmp bl, 'Z'
+    ja .vow_low
+    add bl, 32
+    mov dl, 1
+.vow_low:
+    cmp al, ''''
+    jne .try_umlaut
+    cmp bl, 'a'
+    jne .try_acute_e
+    mov al, 225
+    jmp .try_cap
+.try_acute_e:
+    cmp bl, 'e'
+    jne .try_acute_i
+    mov al, 233
+    jmp .try_cap
+.try_acute_i:
+    cmp bl, 'i'
+    jne .try_acute_o
+    mov al, 237
+    jmp .try_cap
+.try_acute_o:
+    cmp bl, 'o'
+    jne .try_acute_u
+    mov al, 243
+    jmp .try_cap
+.try_acute_u:
+    cmp bl, 'u'
+    jne .dead_fail
+    mov al, 250
+    jmp .try_cap
+.try_umlaut:
+    cmp al, '"'
+    jne .try_grave
+    cmp bl, 'u'
+    jne .dead_fail
+    mov al, 252
+    jmp .try_cap
+.try_grave:
+    cmp al, '`'
+    jne .try_tilde
+    cmp bl, 'a'
+    jne .try_grave_e
+    mov al, 224
+    jmp .try_cap
+.try_grave_e:
+    cmp bl, 'e'
+    jne .try_grave_i
+    mov al, 232
+    jmp .try_cap
+.try_grave_i:
+    cmp bl, 'i'
+    jne .try_grave_o
+    mov al, 236
+    jmp .try_cap
+.try_grave_o:
+    cmp bl, 'o'
+    jne .try_grave_u
+    mov al, 242
+    jmp .try_cap
+.try_grave_u:
+    cmp bl, 'u'
+    jne .dead_fail
+    mov al, 249
+    jmp .try_cap
+.try_tilde:
+    cmp bl, 'n'
+    jne .dead_fail
+    mov al, 241
+.try_cap:
+    test dl, dl
+    jz .store
+    sub al, 32
+    jmp .store
+.dead_fail:
+    mov edi, [kb_head]
+    mov [kb_buffer + edi], al
+    inc edi
+    and edi, 255
+    mov [kb_head], edi
+    mov al, bl
+    jmp .store
 
 .shift_down:
     or byte [kb_shift], 1
