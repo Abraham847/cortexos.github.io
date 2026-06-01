@@ -12,7 +12,7 @@ void aidemo_init(void) {
     int sz[] = {2, 6, 1};
     nn *n = (nn*)kmalloc(sizeof(nn));
     if (!n) return;
-    nn_init(n, 3, sz);
+    if (nn_init(n, 3, sz)) { kfree(n); return; }
     nn_rand(n, FF(2));
     n->acts[1] = ACT_RELU;
     n->acts[2] = ACT_SIGMOID;

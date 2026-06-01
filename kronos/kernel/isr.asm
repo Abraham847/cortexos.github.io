@@ -76,7 +76,7 @@ isr_common_stub:
     mov ds, ax
     mov es, ax
 
-    mov eax, [esp + 44]
+    mov eax, [esp + 40]
     push eax
     call isr_handler_c
     add esp, 4
@@ -102,7 +102,7 @@ irq_common_stub:
 
     mov [task_saved_esp], esp
 
-    mov eax, [esp + 44]
+    mov eax, [esp + 40]
     cmp eax, 40
     jl .master
     mov al, 0x20
@@ -111,7 +111,7 @@ irq_common_stub:
     mov al, 0x20
     out 0x20, al
 
-    mov eax, [esp + 44]
+    mov eax, [esp + 40]
     push eax
     call irq_handler_c
     add esp, 4

@@ -11,8 +11,8 @@
 <div class="container">
   <header>
     <div class="logo">
-      <h1>KRONOS <span class="v">v0.1</span></h1>
-      <p class="subtitle">32-bit Protected Mode OS &mdash; FAT12 &bull; x86 &bull; VGA Mode 13h</p>
+      <h1>KRONOS <span class="v">v0.2</span></h1>
+      <p class="subtitle">32-bit Protected Mode OS &mdash; FAT12 &bull; x86 &bull; Event-driven &bull; Multitasking</p>
     </div>
     <div class="badge-row">
       <span class="badge">QEMU</span>
@@ -141,15 +141,23 @@
       </div>
       <div class="feature">
         <span class="feature-icon">a</span>
-        <div><strong>Lowercase + Accents</strong> &mdash; full a-z font support, dead-key accents (<code>'</code>+vowel = <code>áéíóúñü</code>).</div>
+        <div><strong>Lowercase + Accents</strong> &mdash; full a-z font support, dead-key accents (<code>'</code>+vowel = <code>&aacute;&eacute;&iacute;&oacute;&uacute;&ntilde;&uuml;</code>).</div>
       </div>
       <div class="feature">
-        <span class="feature-icon">N</span>
-        <div><strong>Networking</strong> &mdash; NE2000 driver, TCP/IP stack, HTTP client, text mode web browser (Fase 4-5).</div>
+        <span class="feature-icon">M</span>
+        <div><strong>System Monitor</strong> &mdash; real-time CPU task info, memory stats, and uptime display.</div>
       </div>
       <div class="feature">
-        <span class="feature-icon">H</span>
-        <div><strong>Hard Disk</strong> &mdash; FAT16/32 support on IDE drives (Fase 3).</div>
+        <span class="feature-icon">F</span>
+        <div><strong>File Manager</strong> &mdash; browse, open, and delete files from the desktop.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">U</span>
+        <div><strong>User Accounts</strong> &mdash; multi-user login with <code>USER</code>, <code>LOGIN</code>, <code>LOGOUT</code>, <code>UNLOCK</code>.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">C</span>
+        <div><strong>User Commands</strong> &mdash; define custom shell commands with <code>UCMD</code> saved to disk.</div>
       </div>
     </div>
   </section>
@@ -162,12 +170,14 @@
         <tr><td>CALC a+b</td><td>Basic arithmetic</td></tr>
         <tr><td>INFO</td><td>System information</td></tr>
         <tr><td>CLEAR</td><td>Clear terminal output</td></tr>
-        <tr><td>DIR</td><td>List files on disk</td></tr>
+        <tr><td>DIR</td><td>List files on disk (cached in RAM)</td></tr>
         <tr><td>DEL file</td><td>Delete a file</td></tr>
         <tr><td>REN old new</td><td>Rename a file</td></tr>
         <tr><td>EDIT file</td><td>Open text editor</td></tr>
         <tr><td>FORTH</td><td>Start FORTH interpreter</td></tr>
         <tr><td>PAINT</td><td>Open drawing app</td></tr>
+        <tr><td>MONITOR</td><td>Open system monitor</td></tr>
+        <tr><td>FMAN [path]</td><td>Open file manager</td></tr>
         <tr><td>NEURAL</td><td>NN training monitor</td></tr>
         <tr><td>NN ...</td><td>Neural network commands</td></tr>
         <tr><td>DS ...</td><td>Dataset manager</td></tr>
@@ -175,6 +185,33 @@
         <tr><td>MODEL ...</td><td>Model registry</td></tr>
         <tr><td>PS</td><td>List tasks</td></tr>
         <tr><td>LANG ES</td><td>Switch language (EN/ES/FR/DE/PT)</td></tr>
+        <tr><td>USER name</td><td>Create a user account</td></tr>
+        <tr><td>LOGIN name</td><td>Login as a user</td></tr>
+        <tr><td>LOGOUT</td><td>Logout current user</td></tr>
+        <tr><td>UNLOCK pass</td><td>Unlock locked session</td></tr>
+        <tr><td>UCMD ADD name action</td><td>Add custom shell command</td></tr>
+        <tr><td>UCMD DEL name</td><td>Delete custom command</td></tr>
+        <tr><td>UCMD SAVE/LOAD</td><td>Persist/restore custom commands</td></tr>
+      </table>
+    </div>
+  </section>
+
+  <section class="section" id="changelog">
+    <h2>v0.2 Changelog</h2>
+    <div class="cmd-table-wrap">
+      <table class="cmd-table">
+        <tr><td>Event-driven architecture</td><td>ISRs push events to lock-free queue; main loop pops and dispatches. No more UI calls from interrupt context.</td></tr>
+        <tr><td>Stack canary</td><td>0xDEADC0DE guard words at both ends of every task stack, verified on task switch.</td></tr>
+        <tr><td>Keyboard ISR min&iacute;ma</td><td>IRQ33 only pushes raw scancode; decoding (shift, ctrl, accents) moved to <code>kb_process()</code>.</td></tr>
+        <tr><td>FS directory cache</td><td>Root directory cached in RAM (224 entries). <code>DIR</code> and file lookups scan memory, not disk.</td></tr>
+        <tr><td>FAT lazy sync</td><td><code>fat_dirty</code> flag avoids redundant disk writes when FAT hasn&rsquo;t changed.</td></tr>
+        <tr><td>Z-order windows</td><td>Separate z-order array decouples visual stacking from window array index.</td></tr>
+        <tr><td>HLT optimization</td><td>Main loop halts CPU when only idle task runs (no busy-wait in scheduler).</td></tr>
+        <tr><td>Password on disk</td><td>System password read from <code>PASS.SYS</code> instead of hardcoded string.</td></tr>
+        <tr><td>Dynamic shell output</td><td>Terminal buffer expanded to 32&times;48; scrolls dynamically based on window height.</td></tr>
+        <tr><td>Dirty flags</td><td>Desktop, windows, system monitor, and file manager skip redraw when nothing changed.</td></tr>
+        <tr><td>Atomic mouse reads</td><td><code>cli/sti</code> guards around mouse position reads in click/drag handlers.</td></tr>
+        <tr><td>Source reorganization</td><td>Files organized into <code>core/</code>, <code>drivers/</code>, <code>ui/</code>, <code>ml/</code>, <code>apps/</code> subdirectories.</td></tr>
       </table>
     </div>
   </section>
@@ -188,9 +225,51 @@
     <p>The script compiles the kernel, assembles the bootloader, and produces <code>cortexos.img</code>.</p>
   </section>
 
+  <section class="section" id="reviews">
+    <h2>Report Bugs / Leave Feedback</h2>
+    <p style="color:#888;font-size:13px;margin-bottom:16px;">Found a bug or have a suggestion? Let us know below.</p>
+
+    <form id="review-form" class="review-form" action="https://api.web3forms.com/submit" method="POST" target="review-iframe" onsubmit="showThanks()">
+      <input type="hidden" name="access_key" value="837dbd7f-bce4-4cdf-ac93-8aff250476c8">
+      <input type="hidden" name="subject" value="New KronOS Review">
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="name">Name</label>
+          <input type="text" name="name" id="name" placeholder="Your name" required>
+        </div>
+        <div class="form-group">
+          <label for="rating">Rating</label>
+          <select name="rating" id="rating" required>
+            <option value="">--</option>
+            <option value="5">5 - Excellent</option>
+            <option value="4">4 - Good</option>
+            <option value="3">3 - Average</option>
+            <option value="2">2 - Poor</option>
+            <option value="1">1 - Terrible</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label for="message">Review</label>
+        <textarea name="message" id="message" rows="4" placeholder="Write your review here..." required></textarea>
+      </div>
+      <button type="submit" class="btn btn-primary">Submit Review</button>
+      <div id="review-thanks" style="display:none;color:#50c8ff;font-size:14px;margin-top:12px;">Thanks! Your review was sent.</div>
+    </form>
+    <iframe name="review-iframe" style="display:none"></iframe>
+  </section>
+
   <footer>
-    <p>KronOS v0.1 &mdash; x86 32-bit Protected Mode OS</p>
+    <p>KronOS v0.2 &mdash; x86 32-bit Protected Mode OS</p>
   </footer>
 </div>
+
+<script>
+function showThanks() {
+  document.getElementById('review-thanks').style.display = 'block';
+  document.getElementById('review-form').reset();
+}
+</script>
 </body>
 </html>

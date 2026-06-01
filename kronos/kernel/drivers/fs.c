@@ -2,26 +2,23 @@
 #include "ata.h"
 #include "heap.h"
 
-/* ---- BPB ---- */
 static struct {
     u16 bps; u8 spc; u16 res; u8 nfat; u16 root_max;
     u16 tot; u8 media; u16 spf; u16 root_lba; u16 data_lba;
 } bpb;
 
-static u8 *fat;          /* loaded FAT in heap */
+static u8 *fat;
 static int fat_loaded;
+static int fat_dirty;
 
-/* ---- helpers ---- */
 static u16 rdw(const u8 *p) { return p[0] | (p[1] << 8); }
 static void wrw(u8 *p, u16 v) { p[0] = v & 0xFF; p[1] = v >> 8; }
 
-/* read one sector from fs */
 static int rdsec(u32 lba, u8 *buf) { return ata_read(lba, 1, buf); }
 static int wrsec(u32 lba, const u8 *buf) { return ata_write(lba, 1, (void*)buf); }
 
 static u16 max_cl;
 
-/* ---- FAT entry ---- */
 static u16 fat_get(u16 cl) {
     if (cl >= max_cl) return 0xFF8;
     u32 off = cl * 3 / 2;
@@ -33,19 +30,19 @@ static void fat_set(u16 cl, u16 val) {
     u32 off = cl * 3 / 2;
     if (cl & 1) { fat[off] = (fat[off] & 0x0F) | ((val & 0x0F) << 4); fat[off+1] = val >> 4; }
     else { fat[off] = val & 0xFF; fat[off+1] = (fat[off+1] & 0xF0) | ((val >> 8) & 0x0F); }
+    fat_dirty = 1;
 }
 
 static int fat_sync(void) {
-    u32 fat1 = bpb.res * bpb.bps;
-    if (ata_write(1, bpb.spf, fat)) return -1;  /* FAT1 */
-    if (ata_write(1 + bpb.spf, bpb.spf, fat)) return -1; /* FAT2 */
+    if (!fat_dirty) return 0;
+    if (ata_write(1, bpb.spf, fat)) return -1;
+    if (ata_write(1 + bpb.spf, bpb.spf, fat)) return -1;
+    fat_dirty = 0;
     return 0;
 }
 
-/* ---- cluster -> LBA ---- */
 static u16 cl_lba(u16 cl) { return bpb.data_lba + (cl - 2) * bpb.spc; }
 
-/* ---- read cluster chain into buf ---- */
 static int cl_read(u16 cl, u8 *buf, u32 max) {
     u32 off = 0;
     while (cl >= 2 && cl < 0xFF8 && off < max) {
@@ -58,42 +55,39 @@ static int cl_read(u16 cl, u8 *buf, u32 max) {
     return off;
 }
 
-/* ---- allocate a free cluster ---- */
 static u16 cl_alloc(void) {
     for (u16 i = 2; i < bpb.tot / bpb.spc; i++)
         if (fat_get(i) == 0) { fat_set(i, 0xFFF); return i; }
     return 0;
 }
 
-/* ---- write data starting at cluster cl, update FAT ---- */
 static int cl_write(u16 *cl, const u8 *buf, u32 size) {
     u32 off = 0;
     u16 cur = *cl, prev = 0;
+    u8 *tmp = (u8*)kmalloc(512);
+    if (!tmp) return -1;
     while (off < size) {
-        if (!cur) { cur = cl_alloc(); if (!cur) return -1; if (prev) fat_set(prev, cur); else *cl = cur; }
+        if (!cur) { cur = cl_alloc(); if (!cur) { kfree(tmp); return -1; } if (prev) fat_set(prev, cur); else *cl = cur; }
         u32 chunk = bpb.spc * bpb.bps;
         if (off + chunk > size) chunk = size - off;
-        /* pad sector with zeros */
         int sects = (chunk + bpb.bps - 1) / bpb.bps;
         for (int s = 0; s < sects; s++) {
-            u8 tmp[512]; int i;
-            for (i = 0; i < 512; i++) tmp[i] = 0;
-            for (i = 0; i < 512 && off < size; i++) tmp[i] = buf[off++];
-            if (ata_write(cl_lba(cur) + s, 1, tmp)) return -1;
+            for (int i = 0; i < 512; i++) tmp[i] = 0;
+            for (int i = 0; i < 512 && off < size; i++) tmp[i] = buf[off++];
+            if (ata_write(cl_lba(cur) + s, 1, tmp)) { kfree(tmp); return -1; }
         }
         prev = cur; cur = fat_get(cur);
-        if (cur >= 0xFF8) cur = 0; /* end of chain */
+        if (cur >= 0xFF8) cur = 0;
     }
     if (prev) fat_set(prev, 0xFFF);
+    kfree(tmp);
     return off;
 }
 
-/* ---- free cluster chain ---- */
 static void cl_free(u16 cl) {
     while (cl >= 2 && cl < 0xFF8) { u16 nxt = fat_get(cl); fat_set(cl, 0); cl = nxt; }
 }
 
-/* ---- 8.3 name helpers ---- */
 static void name_to_83(const char *name, u8 *out) {
     int i;
     for (i = 0; i < 11; i++) out[i] = ' ';
@@ -112,30 +106,54 @@ static void name_from_83(const u8 *in, char *out) {
     out[j] = 0;
 }
 
-/* ---- find dir entry by name ---- */
-static int find_entry(const char *name, u16 *cl, u32 *size, u8 *attr) {
-    u8 name83[11]; name_to_83(name, name83);
+#define DIR_CACHE_MAX 224
+static fs_entry_t dir_cache[DIR_CACHE_MAX];
+static int dir_cache_off[DIR_CACHE_MAX];
+static int dir_cache_count;
+static int dir_cache_dirty;
+
+static int dir_cache_fill(void) {
     u8 sector[512];
     u16 root_sects = (bpb.root_max * 32 + bpb.bps - 1) / bpb.bps;
-    for (u16 s = 0; s < root_sects; s++) {
+    int count = 0;
+    for (u16 s = 0; s < root_sects && count < DIR_CACHE_MAX; s++) {
         if (rdsec(bpb.root_lba + s, sector)) return -1;
-        for (int i = 0; i < 512; i += 32) {
-            if (sector[i] == 0) return -1;  /* end of entries */
-            if (sector[i] == 0xE5) continue; /* deleted */
-            int match = 1;
-            for (int j = 0; j < 11; j++) if (sector[i + j] != name83[j]) { match = 0; break; }
-            if (match) {
-                if (cl) *cl = rdw(sector + i + 26);
-                if (size) *size = rdw(sector + i + 28) | ((u32)rdw(sector + i + 30) << 16);
-                if (attr) *attr = sector[i + 11];
-                return s * 512 + i;
-            }
+        for (int i = 0; i < 512 && count < DIR_CACHE_MAX; i += 32) {
+            if (sector[i] == 0) goto done;
+            if (sector[i] == 0xE5) continue;
+            if (sector[i + 11] & FS_ATTR_LABEL) continue;
+            name_from_83(sector + i, dir_cache[count].name);
+            dir_cache[count].attr = sector[i + 11];
+            dir_cache[count].cluster = rdw(sector + i + 26);
+            dir_cache[count].size = rdw(sector + i + 28) | ((u32)rdw(sector + i + 30) << 16);
+            dir_cache_off[count] = s * 512 + i;
+            count++;
+        }
+    }
+done:
+    dir_cache_count = count;
+    dir_cache_dirty = 0;
+    return count;
+}
+
+static int find_entry(const char *name, u16 *cl, u32 *size, u8 *attr) {
+    u8 name83[11]; name_to_83(name, name83);
+    if (dir_cache_dirty) dir_cache_fill();
+    for (int i = 0; i < dir_cache_count; i++) {
+        char cname[13];
+        name_to_83(dir_cache[i].name, (u8*)cname);
+        int match = 1;
+        for (int j = 0; j < 11; j++) if (cname[j] != name83[j]) { match = 0; break; }
+        if (match) {
+            if (cl) *cl = dir_cache[i].cluster;
+            if (size) *size = dir_cache[i].size;
+            if (attr) *attr = dir_cache[i].attr;
+            return dir_cache_off[i];
         }
     }
     return -1;
 }
 
-/* ---- write a dir entry ---- */
 static int write_entry(int offset, const u8 *data) {
     u8 sector[512];
     u16 s = offset / 512;
@@ -144,7 +162,6 @@ static int write_entry(int offset, const u8 *data) {
     return wrsec(bpb.root_lba + s, sector);
 }
 
-/* ---- public API ---- */
 int fs_init(void) {
     u8 boot[512];
     if (ata_read(0, 1, boot)) return -1;
@@ -156,6 +173,7 @@ int fs_init(void) {
     bpb.tot = rdw(boot + 19);
     bpb.media = boot[21];
     bpb.spf = rdw(boot + 22);
+    if (bpb.bps < 512 || bpb.spc == 0 || bpb.tot == 0) return -1;
     bpb.root_lba = bpb.res + bpb.nfat * bpb.spf;
     u16 root_sects = (bpb.root_max * 32 + bpb.bps - 1) / bpb.bps;
     bpb.data_lba = bpb.root_lba + root_sects;
@@ -165,28 +183,17 @@ int fs_init(void) {
     if (!fat) return -1;
     if (ata_read(1, bpb.spf, fat)) { kfree(fat); return -1; }
     fat_loaded = 1;
+    fat_dirty = 0;
+    dir_cache_fill();
     return 0;
 }
 
 int fs_list(const char *path, fs_entry_t *entries, int max) {
-    (void)path; /* root only for now */
-    u8 sector[512];
-    u16 root_sects = (bpb.root_max * 32 + bpb.bps - 1) / bpb.bps;
-    int count = 0;
-    for (u16 s = 0; s < root_sects && count < max; s++) {
-        if (rdsec(bpb.root_lba + s, sector)) return -1;
-        for (int i = 0; i < 512 && count < max; i += 32) {
-            if (sector[i] == 0) return count;
-            if (sector[i] == 0xE5) continue;
-            if (sector[i + 11] & FS_ATTR_LABEL) continue;
-            name_from_83(sector + i, entries[count].name);
-            entries[count].attr = sector[i + 11];
-            entries[count].cluster = rdw(sector + i + 26);
-            entries[count].size = rdw(sector + i + 28) | ((u32)rdw(sector + i + 30) << 16);
-            count++;
-        }
-    }
-    return count;
+    (void)path;
+    if (dir_cache_dirty) dir_cache_fill();
+    int n = dir_cache_count < max ? dir_cache_count : max;
+    for (int i = 0; i < n; i++) entries[i] = dir_cache[i];
+    return n;
 }
 
 int fs_read(const char *path, u8 *buf, u32 max_size) {
@@ -200,12 +207,8 @@ int fs_read(const char *path, u8 *buf, u32 max_size) {
 int fs_write(const char *path, const u8 *buf, u32 size) {
     u16 new_cl = 0, old_cl = 0; u32 old_sz = 0; u8 attr = 0;
     int off = find_entry(path, &old_cl, &old_sz, &attr);
-    /* allocate new clusters first, don't free old until write succeeds */
     int written = cl_write(&new_cl, buf, size);
     if (written < 0) return -1;
-    /* write succeeded, now safe to free old */
-    if (off >= 0) { if (old_cl) cl_free(old_cl); }
-    /* update or create dir entry */
     u8 entry[32]; int i;
     for (i = 0; i < 32; i++) entry[i] = 0;
     u8 n83[11]; name_to_83(path, n83);
@@ -215,6 +218,7 @@ int fs_write(const char *path, const u8 *buf, u32 size) {
     wrw(entry + 30, (size >> 16) & 0xFFFF);
     if (off >= 0) {
         write_entry(off, entry);
+        if (old_cl) cl_free(old_cl);
     } else {
         u8 sector[512];
         u16 root_sects = (bpb.root_max * 32 + bpb.bps - 1) / bpb.bps;
@@ -232,6 +236,7 @@ int fs_write(const char *path, const u8 *buf, u32 size) {
         if (!found) return -1;
     }
     fat_sync();
+    dir_cache_dirty = 1;
     return written;
 }
 
@@ -239,13 +244,14 @@ int fs_delete(const char *path) {
     u16 cl = 0;
     int off = find_entry(path, &cl, 0, 0);
     if (off < 0) return -1;
-    if (cl) cl_free(cl);
     u8 sector[512];
     u16 s = off / 512;
     if (rdsec(bpb.root_lba + s, sector)) return -1;
-    sector[off % 512] = 0xE5; /* mark deleted */
+    sector[off % 512] = 0xE5;
     if (wrsec(bpb.root_lba + s, sector)) return -1;
+    if (cl) cl_free(cl);
     fat_sync();
+    dir_cache_dirty = 1;
     return 0;
 }
 
@@ -257,5 +263,7 @@ int fs_rename(const char *oldp, const char *newp) {
     u16 s = off / 512;
     if (rdsec(bpb.root_lba + s, sector)) return -1;
     for (int i = 0; i < 11; i++) sector[(off % 512) + i] = n83[i];
-    return wrsec(bpb.root_lba + s, sector);
+    if (wrsec(bpb.root_lba + s, sector)) return -1;
+    dir_cache_dirty = 1;
+    return 0;
 }

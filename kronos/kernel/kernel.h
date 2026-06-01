@@ -1,23 +1,7 @@
 #ifndef KERNEL_H
 #define KERNEL_H
 
-typedef unsigned char  u8;
-typedef unsigned short u16;
-typedef unsigned int   u32;
-
-#define NULL 0
-
-void outb(u16 port, u8 val);
-u8 inb(u16 port);
-void outw(u16 port, u16 val);
-u16 inw(u16 port);
-
-void memset(void *ptr, u8 val, u32 size);
-void memcpy(void *dst, const void *src, u32 size);
-int strlen(const char *s);
-int strcmp(const char *a, const char *b);
-void itoa(int val, char *buf);
-void itohex(u32 val, char *buf);
+#include "core.h"
 
 void vga_init(void);
 void vga_putpixel(int x, int y, u8 col);
@@ -43,19 +27,18 @@ void kb_init(void);
 char kb_getchar(void);
 void kb_gets(char *buf, int max);
 int kb_keypressed(void);
+void kb_process(void);
 
 void mouse_init(void);
 void mouse_handler(void);
-extern volatile int mouse_x, mouse_y, mouse_btn;
 
 void timer_init(void);
 void timer_sleep(int ticks);
-extern volatile u32 timer_ticks;
 
 typedef struct {
     int x, y, w, h;
     char title[24];
-    int active, visible;
+    int active, visible, dirty;
     void (*draw)(int id);
     void (*keypress)(int id, char c);
     void (*click)(int id, int mx, int my);
@@ -77,6 +60,7 @@ window_t *wm_get(int id);
 void desktop_init(void);
 void desktop_draw(void);
 void desktop_click(int mx, int my);
+void desktop_mark_dirty(void);
 
 void shell_init(void);
 void shell_keypress(int id, char c);
@@ -138,12 +122,6 @@ int model_refs_at(int idx);
 void aidemo_init(void);
 void aidemo_task(void);
 
-extern volatile char kb_buf[256];
-extern volatile int kb_head, kb_tail;
-
-extern u32 vga_fb_addr;
-extern u16 vga_width, vga_height, vga_pitch;
-
 void edit_init(void);
 void edit_open(const char *fn);
 void edit_draw(int id);
@@ -159,5 +137,8 @@ void paint_open(void);
 void paint_draw(int id);
 void paint_keypress(int id, char c);
 void paint_click(int id, int mx, int my);
+
+void sysmon_open(void);
+void fman_open(void);
 
 #endif

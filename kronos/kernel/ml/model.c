@@ -45,7 +45,7 @@ int model_load_file(const char *name, const char *path) {
 nn* model_get(const char *name) {
     int idx = find_name(name);
     if (idx < 0) return 0;
-    registry[idx].refs++;
+    if (registry[idx].refs < 0x7FFFFFFF) registry[idx].refs++;
     return registry[idx].net;
 }
 
@@ -79,6 +79,7 @@ void model_list(char *buf, int max) {
         for (j = 0; tmp[j] && pos < max - 2; j++) buf[pos++] = tmp[j];
         buf[pos++] = ' ';
     }
+    if (max > 0) buf[max - 1] = 0;
     if (pos < max) buf[pos] = 0;
 }
 

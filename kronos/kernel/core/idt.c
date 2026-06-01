@@ -35,37 +35,15 @@ void isr_handler_c(int num) {
 }
 
 void irq_handler_c(int num) {
-    if (num == 32) { timer_ticks++; task_schedule(); }
-    else if (num == 33) {
+    if (num == 32) {
+        timer_ticks++;
+        task_schedule();
+    } else if (num == 33) {
         u8 sc = inb(0x60);
-        static int shift = 0, ctrl = 0;
-        if (sc == 0x2A || sc == 0x36) shift = 1;
-        else if (sc == 0xAA || sc == 0xB6) shift = 0;
-        if (sc == 0x1D) ctrl = 1;
-        else if (sc == 0x9D) ctrl = 0;
-        if (!(sc & 0x80)) {
-            static u8 map[] = {0,0,'1','2','3','4','5','6','7','8','9','0','-','=',8,9,
-                'q','w','e','r','t','y','u','i','o','p','[',']',13,0,'a','s',
-                'd','f','g','h','j','k','l',';',39,'`',0,92,'z','x','c','v',
-                'b','n','m',',','.','/',0,'*',0,' '};
-            static u8 map_s[] = {0,0,'!','@','#','$','%','^','&','*','(',')','_','+',8,9,
-                'Q','W','E','R','T','Y','U','I','O','P','{','}',13,0,'A','S',
-                'D','F','G','H','J','K','L',':',34,'~',0,'|','Z','X','C','V',
-                'B','N','M','<','>','?',0,'*',0,' '};
-            u8 c = 0;
-            if (sc == 0x48) c = 0x80;  /* up */
-            else if (sc == 0x50) c = 0x81;  /* down */
-            else if (sc == 0x4B) c = 0x82;  /* left */
-            else if (sc == 0x4D) c = 0x83;  /* right */
-            else if (ctrl && sc == 0x1E) c = 0x84;  /* Ctrl+A */
-            else if (ctrl && sc == 0x1F) c = 0x85;  /* Ctrl+S */
-            else if (ctrl && sc == 0x18) c = 0x86;  /* Ctrl+O */
-            else if (ctrl && sc == 0x10) c = 0x87;  /* Ctrl+Q */
-            else if (sc < sizeof(map)) c = shift ? map_s[sc] : map[sc];
-            if (c) {
-                kb_buf[kb_head] = c;
-                kb_head = (kb_head + 1) & 255;
-            }
+        int next = (kb_raw_head + 1) & 255;
+        if (next != kb_raw_tail) {
+            kb_raw[kb_raw_head] = sc;
+            kb_raw_head = next;
         }
     } else if (num == 44) {
         mouse_handler();

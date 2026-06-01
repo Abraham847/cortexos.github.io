@@ -13,7 +13,7 @@ void paint_open(void) {
 
 void paint_draw(int id) {
     window_t *win = wm_get(id);
-    if (!win) return;
+    if (!win || !win->visible) { paint_win_id = -1; return; }
     int bx = win->x, by = win->y;
     vga_drawstring(bx + 3, by + 12, tr(S_COLORS), 7, 1);
     int cx = bx + 55;

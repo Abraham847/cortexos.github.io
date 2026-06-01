@@ -92,7 +92,7 @@ void forth_open(void) {
 
 void forth_draw(int id) {
     window_t *win = wm_get(id);
-    if (!win) return;
+    if (!win || !win->visible) { forth_win_id = -1; return; }
     forth_bx = win->x + 5; forth_by = win->y + 13;
     vga_drawstring(forth_bx, forth_by, "> ", 6, 1);
     vga_drawstring(forth_bx + 15, forth_by, input, 15, 1);

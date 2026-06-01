@@ -43,7 +43,7 @@ static int default_epochs = 100;
 
 /* ===== HELPERS ===== */
 static void record_loss(int si) {
-    int v = FI(slots[si].loss * 100 / F1);
+    int v = FI((long long)slots[si].loss * 100 / F1);
     if (v > 100) v = 100; if (v < 0) v = 0;
     loss_hist[si][loss_pos[si]] = v;
     loss_pos[si] = (loss_pos[si] + 1) % LOSS_HIST;
@@ -57,7 +57,8 @@ static int alloc_slot(void) {
 
 static void slot_init_net(int si, int nl, int *sz) {
     if (slots[si].ready) nn_free(&slots[si].net);
-    nn_init(&slots[si].net, nl, sz);
+    slots[si].ready = 0;
+    if (nn_init(&slots[si].net, nl, sz)) return;
     nn_rand(&slots[si].net, FF(2));
     slots[si].ready = 1;
     slots[si].loss = F1;
@@ -100,6 +101,7 @@ void ai_get_info(char *buf, int max) {
         scpy(buf, &pos, nn_act_name(n->acts[li]), max);
         scpy(buf, &pos, " ", max);
     }
+    if (max > 0) buf[max - 1] = 0;
     if (pos < max) buf[pos] = 0;
 }
 
@@ -217,7 +219,7 @@ int ai_infer_str(const char *in_str, char *out_str, int max) {
     nn *n = &slots[si].net;
     fp in[NN_MAX_L];
     int count = 0;
-    while (*in_str && count < n->sz[0]) {
+    while (*in_str && count < n->sz[0] && count < NN_MAX_L) {
         while (*in_str == ' ') in_str++;
         if ((*in_str < '0' || *in_str > '9') && *in_str != '-') { in_str++; continue; }
         int val = 0, neg = 0;
@@ -235,6 +237,7 @@ int ai_infer_str(const char *in_str, char *out_str, int max) {
         char dbuf[16]; itoa(v, dbuf);
         for (int j = 0; dbuf[j] && pos < max - 1; j++) out_str[pos++] = dbuf[j];
     }
+    if (max > 0) out_str[max - 1] = 0;
     if (pos < max) out_str[pos] = 0;
     return pos;
 }
@@ -296,6 +299,7 @@ int ds_add_sample(const char *str) {
     }
     if (nv != mgr_ds.ni + mgr_ds.no) return -2;
     int nn = mgr_ds.n + 1;
+    if (nn > 32768 / (int)sizeof(fp) / mgr_ds.ni || nn > 32768 / (int)sizeof(fp) / mgr_ds.no) return -3;
     fp *ni2 = (fp*)kmalloc(nn * mgr_ds.ni * sizeof(fp));
     fp *no2 = (fp*)kmalloc(nn * mgr_ds.no * sizeof(fp));
     if (!ni2 || !no2) { kfree(ni2); kfree(no2); return -3; }
@@ -307,10 +311,13 @@ int ds_add_sample(const char *str) {
     for (int j = 0; j < mgr_ds.no; j++) no2[mgr_ds.n * mgr_ds.no + j] = FF(vals[mgr_ds.ni + j]);
     kfree(mgr_ds.in); kfree(mgr_ds.out);
     mgr_ds.in = ni2; mgr_ds.out = no2; mgr_ds.n = nn; return 0;
+
+
 }
 
 int ds_save_mgr(const char *path) {
     if (!mgr_ready || mgr_ds.n == 0) return -1;
+    if (mgr_ds.n > 8192 || mgr_ds.ni + mgr_ds.no > 256) return -1;
     int total = mgr_ds.n * (mgr_ds.ni + mgr_ds.no);
     int needed = total * 4 + 12;
     u8 *buf = (u8*)kmalloc(needed);
@@ -329,7 +336,7 @@ int ds_save_mgr(const char *path) {
 
 int ds_mgr_count(void) { return mgr_ready ? mgr_ds.n : -1; }
 void ds_clear_mgr(void) {
-    if (mgr_ready) { kfree(mgr_ds.in); kfree(mgr_ds.out); }
+    if (mgr_ready) { kfree(mgr_ds.in); kfree(mgr_ds.out); mgr_ds.in = 0; mgr_ds.out = 0; }
     mgr_ready = 0; mgr_ds.n = 0;
 }
 
@@ -386,9 +393,10 @@ void ai_draw(int id) {
     int vw = win->w - 20;
     for (int l = 0; l < n->nl; l++) {
         nx[l] = bx + 10 + l * (vw / (n->nl > 1 ? n->nl - 1 : 1));
+        int n_show = n->sz[l] > 20 ? 20 : n->sz[l];
         int sp = n->sz[l] > 10 ? 6 : 12;
         int sy = by + 30 + (20 - n->sz[l]) * sp / 2;
-        for (int ne = 0; ne < n->sz[l]; ne++) {
+        for (int ne = 0; ne < n_show && ne < 20; ne++) {
             ny[l][ne] = sy + ne * sp;
             fp val = n->a[l].d[ne];
             int v = FI(val * 14);
@@ -418,7 +426,7 @@ void ai_draw(int id) {
     int top_y = by + 30 + 20 * 6 + 5;
     int row = top_y;
 
-    int lv = FI(slots[si].loss * 100 / F1);
+    int lv = FI((long long)slots[si].loss * 100 / F1);
     if (lv > 100) lv = 100; if (lv < 0) lv = 0;
     vga_drawstring(bx + 5, row, tr(S_LOSS), 7, 1);
     itoa(lv, dbuf);
@@ -685,6 +693,7 @@ void ai_weights_draw(int id) {
         if (wgt_sel_layer < 0) wgt_sel_layer = 0;
         int l = wgt_sel_layer;
         int max_cells = (win->w - 20) / 10;
+        if (n->sz[l + 1] == 0) return;
         if (max_cells > n->sz[l] * n->sz[l + 1]) max_cells = n->sz[l] * n->sz[l + 1];
 
         vga_drawstring(bx + 5, by + 28, tr(S_ARCH), 7, 1);
@@ -730,7 +739,11 @@ void ai_weights_keypress(int id, char c) {
 /* ===== SHELL: WINDOW LAUNCHERS ===== */
 void ai_open_trainer(int si) {
     if (si < 0 || si >= slot_count || !slots[si].ready) return;
-    if (slots[si].win_id >= 0) { wm_focus(slots[si].win_id); return; }
+    if (slots[si].win_id >= 0) {
+        window_t *w = wm_get(slots[si].win_id);
+        if (w && w->visible) { wm_focus(slots[si].win_id); return; }
+        slots[si].win_id = -1;
+    }
     char title[24]; int ti = 0;
     const char *tp = tr(S_NEURAL);
     while (*tp && ti < 21) title[ti++] = *tp++;
@@ -743,7 +756,11 @@ void ai_open_trainer(int si) {
 
 void ai_open_editor(int si) {
     if (si < 0 || si >= slot_count || !slots[si].ready) return;
-    if (slots[si].edit_win >= 0) { wm_focus(slots[si].edit_win); return; }
+    if (slots[si].edit_win >= 0) {
+        window_t *w = wm_get(slots[si].edit_win);
+        if (w && w->visible) { wm_focus(slots[si].edit_win); return; }
+        slots[si].edit_win = -1;
+    }
     char title[24]; int ti = 0;
     const char *tp = tr(S_NNEDIT);
     while (*tp && ti < 21) title[ti++] = *tp++;
@@ -756,13 +773,21 @@ void ai_open_editor(int si) {
 
 void ai_open_ds_view(void) {
     static int ds_win = -1;
-    if (ds_win >= 0) { wm_focus(ds_win); return; }
+    if (ds_win >= 0) {
+        window_t *w = wm_get(ds_win);
+        if (w && w->visible) { wm_focus(ds_win); return; }
+        ds_win = -1;
+    }
     ds_win = wm_create(300, 100, 220, 160, tr(S_DSVIEW), ai_ds_draw, ai_ds_keypress, 0);
 }
 
 void ai_open_weights(int si) {
     if (si < 0 || si >= slot_count || !slots[si].ready) return;
-    if (slots[si].wgt_win >= 0) { wm_focus(slots[si].wgt_win); return; }
+    if (slots[si].wgt_win >= 0) {
+        window_t *w = wm_get(slots[si].wgt_win);
+        if (w && w->visible) { wm_focus(slots[si].wgt_win); return; }
+        slots[si].wgt_win = -1;
+    }
     char title[24]; int ti = 0;
     const char *tp = tr(S_WEIGHTS);
     while (*tp && ti < 21) title[ti++] = *tp++;

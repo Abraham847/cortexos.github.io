@@ -1,5 +1,6 @@
 #include "ata.h"
 #include "kernel.h"
+#include "task.h"
 
 extern u8 boot_drive;
 
@@ -24,57 +25,68 @@ int ata_init(void) {
 }
 
 static int wait_bsy(void) {
-    for (int i = 0; i < 1000000; i++)
+    u32 start = timer_ticks;
+    for (int i = 0; i < 1000000; i++) {
         if (!(inb(PORT_STAT) & 0x80)) return 0;
+        if (timer_ticks - start > 10) return -1;
+    }
     return -1;
 }
 
 static int wait_drq(void) {
+    u32 start = timer_ticks;
     for (int i = 0; i < 1000000; i++) {
         u8 s = inb(PORT_STAT);
         if (s & 0x08) return 0;
         if (s & 0x01) return -1;
+        if (timer_ticks - start > 10) return -1;
     }
     return -1;
 }
 
 int ata_read(unsigned lba, unsigned count, void *buf) {
     u8 *p = (u8 *)buf;
+    atomic_driver = 1;
+    int ret = 0;
     for (unsigned s = 0; s < count; s++) {
-        if (wait_bsy()) return -1;
+        if (wait_bsy()) { ret = -1; break; }
         outb(PORT_DRV, drive | ((lba >> 24) & 0x0F));
         outb(PORT_SC, 1);
         outb(PORT_LBA0, lba & 0xFF);
         outb(PORT_LBA1, (lba >> 8) & 0xFF);
         outb(PORT_LBA2, (lba >> 16) & 0xFF);
         outb(PORT_CMD, 0x20);
-        if (wait_drq()) return -1;
+        if (wait_drq()) { ret = -1; break; }
         for (int i = 0; i < 256; i++) {
             ((u16 *)p)[i] = inw(PORT_DATA);
         }
         p += 512;
         lba++;
     }
-    return 0;
+    atomic_driver = 0;
+    return ret;
 }
 
 int ata_write(unsigned lba, unsigned count, void *buf) {
     u8 *p = (u8 *)buf;
+    atomic_driver = 1;
+    int ret = 0;
     for (unsigned s = 0; s < count; s++) {
-        if (wait_bsy()) return -1;
+        if (wait_bsy()) { ret = -1; break; }
         outb(PORT_DRV, drive | ((lba >> 24) & 0x0F));
         outb(PORT_SC, 1);
         outb(PORT_LBA0, lba & 0xFF);
         outb(PORT_LBA1, (lba >> 8) & 0xFF);
         outb(PORT_LBA2, (lba >> 16) & 0xFF);
         outb(PORT_CMD, 0x30);
-        if (wait_drq()) return -1;
+        if (wait_drq()) { ret = -1; break; }
         for (int i = 0; i < 256; i++)
             outw(PORT_DATA, ((u16 *)p)[i]);
         outb(PORT_CMD, 0xE7);
-        if (wait_bsy()) return -1;
+        if (wait_bsy()) { ret = -1; break; }
         p += 512;
         lba++;
     }
-    return 0;
+    atomic_driver = 0;
+    return ret;
 }

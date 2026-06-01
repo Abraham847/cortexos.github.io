@@ -44,9 +44,11 @@ static fp tanh_fp(fp x) {
     return fpm(FF(2), s) - F1;
 }
 
-static void mat_init(mat *m, int r, int c) {
+static int mat_init(mat *m, int r, int c) {
     m->r = r; m->c = c;
     m->d = (fp *)kmalloc(r * c * sizeof(fp));
+    if (!m->d) { m->r = 0; m->c = 0; return -1; }
+    return 0;
 }
 
 static void mat_free(mat *m) {
@@ -125,22 +127,25 @@ static fp act_deriv(fp a_val, nn_act_t act) {
     }
 }
 
-void nn_init(nn *n, int nl, int *sz) {
+int nn_init(nn *n, int nl, int *sz) {
+    if (nl <= 0 || nl > NN_MAX_L) return -1;
     n->nl = nl;
-    n->init = 1;
+    n->init = 0;
     for (int i = 0; i < nl; i++) {
         n->sz[i] = sz[i];
         n->acts[i] = ACT_SIGMOID;
-        mat_init(&n->z[i], sz[i], 1);
-        mat_init(&n->a[i], sz[i], 1);
-        mat_init(&n->e[i], sz[i], 1);
+        if (mat_init(&n->z[i], sz[i], 1)) { nn_free(n); return -1; }
+        if (mat_init(&n->a[i], sz[i], 1)) { nn_free(n); return -1; }
+        if (mat_init(&n->e[i], sz[i], 1)) { nn_free(n); return -1; }
     }
     for (int i = 0; i < nl - 1; i++) {
-        mat_init(&n->w[i], sz[i + 1], sz[i]);
-        mat_init(&n->b[i], sz[i + 1], 1);
-        mat_init(&n->dw[i], sz[i + 1], sz[i]);
-        mat_init(&n->db[i], sz[i + 1], 1);
+        if (mat_init(&n->w[i], sz[i + 1], sz[i])) { nn_free(n); return -1; }
+        if (mat_init(&n->b[i], sz[i + 1], 1)) { nn_free(n); return -1; }
+        if (mat_init(&n->dw[i], sz[i + 1], sz[i])) { nn_free(n); return -1; }
+        if (mat_init(&n->db[i], sz[i + 1], 1)) { nn_free(n); return -1; }
     }
+    n->init = 1;
+    return 0;
 }
 
 void nn_free(nn *n) {
@@ -261,15 +266,17 @@ int nn_load(nn *n, unsigned sector) {
 
     int nl = *((int *)p); p += 4;
     int sz[NN_MAX_L];
-    if (nl > NN_MAX_L) return -1;
+    if (nl <= 0 || nl > NN_MAX_L) return -1;
     for (int i = 0; i < nl; i++) {
         sz[i] = *((int *)p); p += 4;
     }
 
-    nn_init(n, nl, sz);
+    if (nn_init(n, nl, sz)) return -1;
 
     for (int i = 0; i < nl; i++) {
-        if (i < nl) n->acts[i] = (nn_act_t)(*((int *)p)); p += 4;
+        int av = *((int *)p); p += 4;
+        if (av < 0 || av > 2) av = 0;
+        n->acts[i] = (nn_act_t)av;
     }
 
     for (int l = 0; l < n->nl - 1; l++) {
@@ -299,6 +306,7 @@ int nn_save_file(nn *n, const char *path) {
     int wtotal = 0, btotal = 0;
     for (int l = 0; l < n->nl - 1; l++) { wtotal += n->w[l].r * n->w[l].c; }
     for (int l = 0; l < n->nl - 1; l++) { btotal += n->b[l].r; }
+    if (wtotal > 262144 / 4 || btotal > 262144 / 4) return -1;
     int total = hdr + wtotal * 4 + btotal * 4;
     unsigned char *buf = (unsigned char*)kmalloc(total);
     if (!buf) return -1;
@@ -336,6 +344,7 @@ int nn_load_file(nn *n, const char *path) {
     int wtotal = 0, btotal = 0;
     for (int l = 0; l < nl - 1; l++) { wtotal += sz[l + 1] * sz[l]; }
     for (int l = 0; l < nl - 1; l++) { btotal += sz[l + 1]; }
+    if (wtotal > 262144 / 4 || btotal > 262144 / 4) return -1;
     int needed = hdr + wtotal * 4 + btotal * 4;
     unsigned char *buf = (unsigned char*)kmalloc(needed);
     if (!buf) return -1;
@@ -343,7 +352,7 @@ int nn_load_file(nn *n, const char *path) {
     if (nread3 < needed) { kfree(buf); return -1; }
     p = buf + 4;
     for (int i = 0; i < nl; i++) { sz[i] = *((int *)p); p += 4; }
-    nn_init(n, nl, sz);
+    if (nn_init(n, nl, sz)) { kfree(buf); return -1; }
     for (int i = 0; i < nl; i++) { n->acts[i] = (nn_act_t)(*((int *)p)); p += 4; }
     for (int l = 0; l < n->nl - 1; l++) {
         int nw = n->w[l].r * n->w[l].c;
@@ -431,9 +440,12 @@ int ds_load(dataset *ds, const char *path) {
     ds->n = *(int*)p; p += 4;
     ds->ni = *(int*)p; p += 4;
     ds->no = *(int*)p; p += 4;
-    int total = ds->n * (ds->ni + ds->no);
-    int needed = total * 4 + 12;
-    u8 *big = (u8*)kmalloc(needed);
+    if (ds->n <= 0 || ds->ni <= 0 || ds->no <= 0) return -1;
+    if (ds->n > 100000 || ds->ni > 1000 || ds->no > 1000) return -1;
+    long long total = (long long)ds->n * (ds->ni + ds->no);
+    long long needed = total * 4 + 12;
+    if (needed > 0x100000) return -1;
+    u8 *big = (u8*)kmalloc((int)needed);
     if (!big) return -1;
     int nread = fs_read(path, big, needed);
     if (nread < needed) { kfree(big); return -1; }
@@ -502,11 +514,14 @@ int ds_import_text(dataset *ds, const char *path, int ni, int no) {
     int lines = 0;
     for (int i = 0; i < nread; i++) if (buf[i] == '\n') lines++;
     if (lines == 0) { kfree(buf); return -1; }
+    if (nread > 0 && buf[nread - 1] != '\n') lines++;
 
     ds->n = lines; ds->ni = ni; ds->no = no;
     ds->in = (fp*)kmalloc(lines * ni * sizeof(fp));
     ds->out = (fp*)kmalloc(lines * no * sizeof(fp));
     if (!ds->in || !ds->out) { kfree(ds->in); kfree(ds->out); kfree(buf); return -1; }
+    for (int i = 0; i < lines * ni; i++) ds->in[i] = 0;
+    for (int i = 0; i < lines * no; i++) ds->out[i] = 0;
 
     char *p = buf;
     for (int i = 0; i < lines; i++) {

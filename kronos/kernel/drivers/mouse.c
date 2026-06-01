@@ -29,12 +29,14 @@ void mouse_init(void) {
     mouse_wait(1); outb(0x60, status);
     mouse_write(0xF6); mouse_read();
     mouse_write(0xF4); mouse_read();
-    mouse_x = 160; mouse_y = 100; mouse_btn = 0;
+    mouse_x = vga_width / 2; mouse_y = vga_height / 2;
+    mouse_btn = 0;
+    mouse_click_count = 0;
 }
 
 void mouse_handler(void) {
-    static u8 byte = 0;
-    byte = inb(0x60);
+    static int prev_btn = 0;
+    u8 byte = inb(0x60);
     switch (mouse_cycle) {
         case 0:
             if (!(byte & 0x08)) { mouse_cycle = 0; break; }
@@ -49,6 +51,10 @@ void mouse_handler(void) {
             if (mouse_x < 0) mouse_x = 0; if (mouse_x >= (int)vga_width) mouse_x = vga_width - 1;
             if (mouse_y < 0) mouse_y = 0; if (mouse_y >= (int)vga_height) mouse_y = vga_height - 1;
             mouse_btn = mouse_packet[0] & 7;
+            if (mouse_btn != prev_btn) {
+                if (mouse_btn & 1) mouse_click_count++;
+                prev_btn = mouse_btn;
+            }
             break;
     }
 }

@@ -33,7 +33,7 @@ typedef struct nn_s {
     int init;
 } nn;
 
-void nn_init(nn *n, int nl, int *sz);
+int nn_init(nn *n, int nl, int *sz);
 void nn_free(nn *n);
 void nn_rand(nn *n, fp s);
 void nn_fwd(nn *n, fp *in);

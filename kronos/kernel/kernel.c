@@ -6,6 +6,10 @@
 #include "task.h"
 #include "aidemo.h"
 #include "lang.h"
+#include "boot.h"
+#include "sysmon.h"
+#include "fman.h"
+#include "event_queue.h"
 
 void outb(u16 port, u8 val) { __asm__ volatile("outb %0, %1" : : "a"(val), "Nd"(port)); }
 u8 inb(u16 port) { u8 v; __asm__ volatile("inb %1, %0" : "=a"(v) : "Nd"(port)); return v; }
@@ -21,6 +25,8 @@ void memcpy(void *dst, const void *src, u32 size) {
 }
 int strlen(const char *s) { const char *p = s; while (*p) p++; return p - s; }
 int strcmp(const char *a, const char *b) {
+    if (!a) return !b ? 0 : -1;
+    if (!b) return 1;
     while (*a && *a == *b) { a++; b++; }
     return *(u8*)a - *(u8*)b;
 }
@@ -45,8 +51,11 @@ void itohex(u32 val, char *buf) {
 
 volatile u32 timer_ticks = 0;
 volatile int mouse_x = 160, mouse_y = 100, mouse_btn = 0;
+volatile int mouse_click_count = 0;
 volatile char kb_buf[256];
 volatile int kb_head = 0, kb_tail = 0;
+volatile u8 kb_raw[256];
+volatile int kb_raw_head = 0, kb_raw_tail = 0;
 
 u32 vga_fb_addr = 0xA0000;
 u16 vga_width = 320;
@@ -56,7 +65,6 @@ u16 vga_pitch = 320;
 extern u8 __bss_start[], __bss_end[];
 
 void ai_bg_task(void);
-void load_font(void);
 
 static int lw(const char *s) { return strlen(s) * 9; }
 
@@ -119,6 +127,7 @@ static void do_login(void) {
         if (attempts > 0) {
             vga_drawstring(cx - lw(tr(S_ANY_KEY))/2, cy+35, tr(S_ANY_KEY), 8, 1);
             kb_getchar();
+            while (kb_keypressed()) kb_getchar();
         }
     }
     vga_fill(0);
@@ -127,27 +136,28 @@ static void do_login(void) {
 }
 
 void kmain(void) {
-    heap_init();
-    ata_init();
+    boot_start();
+    heap_init(); boot_msg("heap");
 
     if (*BIOS_VBE_ACTIVE) {
         vga_fb_addr = *BIOS_VBE_FB;
         vga_width = *BIOS_VBE_WIDTH;
         vga_height = *BIOS_VBE_HEIGHT;
         vga_pitch = *BIOS_VBE_PITCH;
-        mouse_x = vga_width / 2;
-        mouse_y = vga_height / 2;
     }
-    vga_init();
+    vga_init(); boot_msg("vga");
     vga_init_palette();
-    vga_fill(1);
 
-    idt_init();
+    idt_init(); boot_msg("idt");
     __asm__ volatile("sti");
-    kb_init();
-    mouse_init();
-    timer_init();
-    fs_init();
+    ev_init(); boot_msg("evq");
+    ata_init(); boot_msg("ata");
+    kb_init(); boot_msg("kbd");
+    mouse_init(); boot_msg("mouse");
+    timer_init(); boot_msg("timer");
+    fs_init(); boot_msg("fs");
+
+    boot_done();
 
     do_login();
 
@@ -168,30 +178,73 @@ void kmain(void) {
     task_create(ai_bg_task);
     task_create(aidemo_task);
 
-    int mouse_down = 0;
+    int dirty = 1;
+
+    int last_uptime = -1;
+
     while (1) {
-        if (kb_keypressed()) {
-            char c = kb_getchar();
-            wm_handle_key(c);
-        }
-        if (mouse_btn & 1) {
-            if (!mouse_down) {
-                wm_handle_click(mouse_x, mouse_y);
-                desktop_click(mouse_x, mouse_y);
-            } else {
-                wm_drag_move(mouse_x, mouse_y);
+        kb_process();
+
+        event_t e;
+        while (ev_pop(&e)) {
+            dirty = 1;
+            switch (e.type) {
+                case EV_KEY_PRESS:
+                    wm_handle_key(e.key_char);
+                    break;
+                default:
+                    break;
             }
         }
-        mouse_down = mouse_btn & 1;
-        desktop_draw();
-        wm_draw();
 
-        vga_putpixel(mouse_x, mouse_y, 15);
-        if (mouse_x > 0) vga_putpixel(mouse_x - 1, mouse_y, 15);
-        vga_putpixel(mouse_x, mouse_y - 1, 15);
-        if (mouse_x < vga_width - 1) vga_putpixel(mouse_x + 1, mouse_y, 15);
-        vga_putpixel(mouse_x, mouse_y + 1, 15);
+        if (mouse_click_count) {
+            __asm__ volatile("cli");
+            int n = mouse_click_count;
+            int mx = mouse_x, my = mouse_y, mb = mouse_btn;
+            mouse_click_count = 0;
+            __asm__ volatile("sti");
+            for (int i = 0; i < n; i++) {
+                wm_handle_click(mx, my);
+                desktop_click(mx, my);
+            }
+            dirty = 1;
+        }
 
-        task_yield();
+        if (mouse_btn & 1) {
+            __asm__ volatile("cli");
+            int mx = mouse_x, my = mouse_y;
+            __asm__ volatile("sti");
+            wm_drag_move(mx, my);
+            dirty = 1;
+        }
+
+        int upt = timer_ticks / 100;
+        if (upt != last_uptime) {
+            last_uptime = upt;
+            desktop_mark_dirty();
+            dirty = 1;
+        }
+
+        if (dirty) {
+            desktop_draw();
+            wm_draw();
+            __asm__ volatile("cli");
+            int mx = mouse_x, my = mouse_y;
+            __asm__ volatile("sti");
+            vga_putpixel(mx, my, 15);
+            if (mx > 0) vga_putpixel(mx - 1, my, 15);
+            vga_putpixel(mx, my - 1, 15);
+            if (mx < vga_width - 1) vga_putpixel(mx + 1, my, 15);
+            vga_putpixel(mx, my + 1, 15);
+            dirty = 0;
+        }
+
+        if (!task_is_initialized()) {
+            __asm__ volatile("hlt");
+        } else if (task_count() <= 1) {
+            __asm__ volatile("hlt");
+        } else {
+            task_yield();
+        }
     }
 }
