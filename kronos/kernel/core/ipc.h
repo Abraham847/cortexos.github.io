@@ -1,7 +1,7 @@
 #ifndef IPC_H
 #define IPC_H
 
-#include "kernel.h"
+#include "core.h"
 
 #define IPC_MBOX_SZ 8
 #define IPC_DATA_SZ 24

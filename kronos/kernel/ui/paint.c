@@ -39,9 +39,14 @@ void paint_click(int id, int mx, int my) {
     if (my > 25) {
         int abs_x = win->x + mx;
         int abs_y = win->y + my;
+        int x1 = win->x + 1, y1 = win->y + 26;
+        int x2 = win->x + win->w - 2, y2 = win->y + win->h - 2;
         for (int dy = -paint_size; dy <= paint_size; dy++)
-            for (int dx = -paint_size; dx <= paint_size; dx++)
-                vga_putpixel(abs_x + dx, abs_y + dy, paint_color);
+            for (int dx = -paint_size; dx <= paint_size; dx++) {
+                int px = abs_x + dx, py = abs_y + dy;
+                if (px >= x1 && px <= x2 && py >= y1 && py <= y2)
+                    vga_putpixel(px, py, paint_color);
+            }
     } else if (mx > 45 && mx < 200 && my > 11 && my < 22) {
         int idx = (mx - 55) / 10 + 1;
         if (idx >= 1 && idx <= 15) paint_color = idx;

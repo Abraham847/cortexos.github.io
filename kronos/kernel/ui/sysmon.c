@@ -1,7 +1,7 @@
 #include "kernel.h"
-#include "ui/sysmon.h"
+#include "sysmon.h"
 #include "bios.h"
-#include "ui/lang.h"
+#include "lang.h"
 
 static int sm_last_task = -1;
 static int sm_last_uptime = -1;

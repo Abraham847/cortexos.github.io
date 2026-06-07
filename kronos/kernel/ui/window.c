@@ -75,6 +75,10 @@ static void draw_title(window_t *win) {
 }
 
 void wm_draw(void) {
+    int any = 0;
+    for (int zi = 0; zi < z_count; zi++)
+        if (wins[z_order[zi]].visible && wins[z_order[zi]].dirty) { any = 1; break; }
+    if (!any) return;
     for (int zi = 0; zi < z_count; zi++) {
         int i = z_order[zi];
         if (!wins[i].visible || !wins[i].dirty) continue;
@@ -111,9 +115,12 @@ void wm_handle_click(int mx, int my) {
 }
 
 void wm_handle_key(char c) {
-    if (focused >= 0 && wins[focused].keypress) {
-        wins[focused].keypress(focused, c);
-        wins[focused].dirty = 1;
+    if (focused >= 0) {
+        window_t *w = &wins[focused];
+        if (w->keypress) {
+            w->keypress(focused, c);
+            w->dirty = 1;
+        }
     }
 }
 

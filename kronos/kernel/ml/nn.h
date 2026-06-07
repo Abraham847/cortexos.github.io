@@ -1,7 +1,7 @@
 #ifndef NN_H
 #define NN_H
 
-#include "kernel.h"
+/* no kernel.h dependency needed */
 
 #define NN_MAX_L 8
 
@@ -15,7 +15,7 @@ fp fpd(fp a, fp b);
 #define FI(a) ((a) >> FPS)
 #define FF(a) ((fp)((a) * F1))
 
-typedef enum { ACT_SIGMOID = 0, ACT_RELU, ACT_TANH } nn_act_t;
+typedef enum { ACT_SIGMOID = 0, ACT_RELU, ACT_TANH, ACT_LEAKY_RELU } nn_act_t;
 
 typedef struct { int r, c; fp *d; } mat;
 
@@ -38,11 +38,11 @@ void nn_free(nn *n);
 void nn_rand(nn *n, fp s);
 void nn_fwd(nn *n, fp *in);
 fp nn_bwd(nn *n, fp *targ, fp lr);
-int nn_save(nn *n, unsigned sector);
-int nn_load(nn *n, unsigned sector);
+/* use nn_save_file/nn_load_file instead (raw ATA versions removed) */
 int nn_save_file(nn *n, const char *path);
 int nn_load_file(nn *n, const char *path);
 int nn_export_txt(nn *n, char *buf, int max);
+int nn_export_csv_file(nn *n, const char *path);
 const char *nn_act_name(nn_act_t act);
 
 typedef struct { int n, ni, no; fp *in, *out; } dataset;

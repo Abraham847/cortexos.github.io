@@ -1,12 +1,34 @@
+#include "ai.h"
 #include "nn.h"
 #include "heap.h"
-#include "ata.h"
 #include "fs.h"
 #include "task.h"
+#include "synch.h"
 #include "lang.h"
+#include "window.h"
+#include "vga.h"
+
+/* Fixed-point integer sqrt (Newton's method) */
+static unsigned int uint_sqrt(unsigned int n) {
+    unsigned int x = n, y = (x + 1) >> 1;
+    while (y < x) { x = y; y = (x + n / x) >> 1; }
+    return x;
+}
+
+static fp fp_sqrt(fp x) {
+    if (x <= 0) return 0;
+    /* sqrt(x / F1) * F1 = sqrt((long long)x * F1) */
+    unsigned long long v = (unsigned long long)x * F1;
+    if (v == 0) return 0;
+    return (fp)uint_sqrt((unsigned int)(v > 0xFFFFFFFFu ? 0xFFFFFFFFu : v));
+}
 
 /* ---- Multi-network ---- */
 #define NN_SLOTS 4
+#define OPT_SGD 0
+#define OPT_MOMENTUM 1
+#define OPT_ADAM 2
+
 static struct {
     nn net; int ready;
     fp loss; int steps;
@@ -18,6 +40,28 @@ static struct {
     int wgt_win;
     fp lr;
     int epochs;
+    fp mu;
+    fp lr_decay;
+    int batch_size;
+    int val_pct;
+    fp val_loss;
+    fp acc;
+    fp *vel_w[NN_MAX_L - 1];
+    fp *vel_b[NN_MAX_L - 1];
+    fp *adam_v_w[NN_MAX_L - 1];
+    fp *adam_v_b[NN_MAX_L - 1];
+    int opt_t;
+    fp beta1;
+    fp beta2;
+    fp eps;
+    fp l2_lambda;
+    fp clip_norm;
+    int lr_sched_step;
+    fp lr_sched_factor;
+    int early_stop_patience;
+    int early_stop_counter;
+    fp best_val_loss;
+    int opt_type;
 } slots[NN_SLOTS];
 static int slot_count;
 
@@ -26,6 +70,7 @@ static int active_slot;
 /* ---- Shared dataset ---- */
 static dataset ds;
 static int ds_loaded;
+static int ds_scroll;
 
 /* ---- Loss history (per-slot) ---- */
 #define LOSS_HIST 50
@@ -42,6 +87,206 @@ static int default_epochs = 100;
 #define TAG_DS     'D'
 
 /* ===== HELPERS ===== */
+static fp compute_accuracy(int si, int start, int count) {
+    nn *n = &slots[si].net;
+    int correct = 0;
+    int no = n->sz[n->nl - 1];
+    for (int i = start; i < start + count; i++) {
+        nn_fwd(n, ds.in + i * ds.ni);
+        int pred = 0, target = 0;
+        fp best = -F1;
+        for (int j = 0; j < no; j++) {
+            fp v = n->a[n->nl - 1].d[j];
+            if (v > best || j == 0) { best = v; pred = j; }
+            if (ds.out[i * ds.no + j] > F1 / 2) target = j;
+        }
+        if (pred == target) correct++;
+    }
+    return (fp)correct * F1 / (count > 0 ? count : 1);
+}
+
+static void apply_gradient_clip(int si, fp max_norm) {
+    if (max_norm == 0) return;
+    nn *n = &slots[si].net;
+    fp sq_sum = 0;
+    for (int l = 0; l < n->nl - 1; l++) {
+        int nw = n->w[l].r * n->w[l].c;
+        for (int i = 0; i < nw; i++) sq_sum += fpm(n->dw[l].d[i], n->dw[l].d[i]);
+        int nb = n->b[l].r;
+        for (int i = 0; i < nb; i++) sq_sum += fpm(n->db[l].d[i], n->db[l].d[i]);
+    }
+    if (sq_sum == 0) return;
+    fp norm = fp_sqrt(sq_sum);
+    fp scale = fpm(max_norm, FI(1)) / norm;
+    if (scale >= F1) return;
+    for (int l = 0; l < n->nl - 1; l++) {
+        int nw = n->w[l].r * n->w[l].c;
+        for (int i = 0; i < nw; i++) n->dw[l].d[i] = fpm(n->dw[l].d[i], scale);
+        int nb = n->b[l].r;
+        for (int i = 0; i < nb; i++) n->db[l].d[i] = fpm(n->db[l].d[i], scale);
+    }
+}
+
+static void apply_l2(int si, fp lambda) {
+    if (lambda == 0) return;
+    nn *n = &slots[si].net;
+    for (int l = 0; l < n->nl - 1; l++) {
+        int nw = n->w[l].r * n->w[l].c;
+        for (int i = 0; i < nw; i++) n->dw[l].d[i] += fpm(lambda, n->w[l].d[i]);
+    }
+}
+
+static void adam_step(int si, fp lr) {
+    nn *n = &slots[si].net;
+    slots[si].opt_t++;
+    int t = slots[si].opt_t;
+    fp beta1 = slots[si].beta1;
+    fp beta2 = slots[si].beta2;
+    fp eps = slots[si].eps;
+    fp bias1 = F1, bias2 = F1;
+    for (int i = 0; i < t; i++) { bias1 = fpm(bias1, beta1); bias2 = fpm(bias2, beta2); }
+    bias1 = F1 - bias1; bias2 = F1 - bias2;
+    for (int l = 0; l < n->nl - 1; l++) {
+        int nw = n->w[l].r * n->w[l].c;
+        fp *mw = slots[si].vel_w[l];
+        fp *vw = slots[si].adam_v_w[l];
+        for (int i = 0; i < nw; i++) {
+            fp g = n->dw[l].d[i];
+            mw[i] = fpm(beta1, mw[i]) + fpm(F1 - beta1, g);
+            vw[i] = fpm(beta2, vw[i]) + fpm(F1 - beta2, fpm(g, g));
+            fp m_hat = mw[i] / bias1;
+            fp v_hat = vw[i] / bias2;
+            n->w[l].d[i] -= fpm(lr, m_hat / (fp_sqrt(v_hat) + eps));
+        }
+        int nb = n->b[l].r;
+        fp *mb = slots[si].vel_b[l];
+        fp *vb = slots[si].adam_v_b[l];
+        for (int i = 0; i < nb; i++) {
+            fp g = n->db[l].d[i];
+            mb[i] = fpm(beta1, mb[i]) + fpm(F1 - beta1, g);
+            vb[i] = fpm(beta2, vb[i]) + fpm(F1 - beta2, fpm(g, g));
+            fp m_hat = mb[i] / bias1;
+            fp v_hat = vb[i] / bias2;
+            n->b[l].d[i] -= fpm(lr, m_hat / (fp_sqrt(v_hat) + eps));
+        }
+    }
+}
+
+static void apply_optimizer(int si, fp lr) {
+    nn *n = &slots[si].net;
+    switch (slots[si].opt_type) {
+        case OPT_ADAM:
+            adam_step(si, lr);
+            return;
+        case OPT_MOMENTUM:
+            if (slots[si].mu != 0) {
+                fp mu = slots[si].mu;
+                for (int l = 0; l < n->nl - 1; l++) {
+                    int nw = n->w[l].r * n->w[l].c;
+                    fp *vw = slots[si].vel_w[l];
+                    for (int i = 0; i < nw; i++) {
+                        fp old_v = vw[i];
+                        vw[i] = fpm(mu, old_v) + n->dw[l].d[i];
+                        n->w[l].d[i] -= fpm(mu, old_v);
+                    }
+                    int nb = n->b[l].r;
+                    fp *vb = slots[si].vel_b[l];
+                    for (int i = 0; i < nb; i++) {
+                        fp old_v = vb[i];
+                        vb[i] = fpm(mu, old_v) + n->db[l].d[i];
+                        n->b[l].d[i] -= fpm(mu, old_v);
+                    }
+                }
+                return;
+            }
+            /* fall through to SGD if mu==0 */
+        default: /* SGD */
+            for (int l = 0; l < n->nl - 1; l++) {
+                int nw = n->w[l].r * n->w[l].c;
+                for (int i = 0; i < nw; i++) n->w[l].d[i] -= n->dw[l].d[i];
+                int nb = n->b[l].r;
+                for (int i = 0; i < nb; i++) n->b[l].d[i] -= n->db[l].d[i];
+            }
+            return;
+    }
+}
+
+static fp compute_val_loss(int si) {
+    if (!ds_loaded || slots[si].ds_idx < 0) return 0;
+    int nv = ds.n * slots[si].val_pct / 100;
+    if (nv < 1) return F1;
+    nn *n = &slots[si].net;
+    fp total = 0;
+    int start = ds.n - nv;
+    for (int i = start; i < ds.n; i++) {
+        nn_fwd(n, ds.in + i * ds.ni);
+        int ol = n->sz[n->nl - 1];
+        for (int j = 0; j < ol; j++) {
+            fp err = n->a[n->nl - 1].d[j] - ds.out[i * ds.no + j];
+            total += fpm(err, err);
+        }
+    }
+    return total / nv;
+}
+
+static void gen_circle_dataset(int n) {
+    ds_create_mgr(2, 1);
+    for (int i = 0; i < n; i++) {
+        unsigned seed = (unsigned)i * 1103515245u + 12345u;
+        int vx = (int)(seed % 2001) - 1000;
+        int vy = (int)((seed * 1103515245u + 54321u) % 2001) - 1000;
+        int rx = vx / 200, ry = vy / 200;
+        int label = (rx * rx + ry * ry < 12) ? 1 : 0;
+        int in = (vx > 0) ? 1 : 0;
+        int jin = (vy > 0) ? 1 : 0;
+        char full[16];
+        full[0] = '0' + in;
+        full[1] = ' ';
+        full[2] = '0' + jin;
+        full[3] = ' ';
+        full[4] = '0' + label;
+        full[5] = 0;
+        ds_add_sample(full);
+    }
+}
+
+static void gen_spiral_dataset(int n) {
+    ds_create_mgr(2, 1);
+    int half = n / 2;
+    for (int i = 0; i < n; i++) {
+        int label = i < half ? 1 : 0;
+        int idx = i < half ? i : i - half;
+        /* Generate spiral using integer approximations */
+        fp angle = (fp)idx * FF(12) / half;
+        fp radius = FF(2) + angle / FF(4);
+        /* Approximate cos/sin via integer table lookup */
+        int ang = (int)((long long)angle * 360 / F1) % 360;
+        int quadrant = ang / 90; ang %= 90;
+        /* Simple integer approximation: cos ~= 1 - a^2/2 for small a, scaled */
+        fp c = F1, s = 0;
+        if (quadrant == 0) { c = F1 - fpm(FF(ang), FF(ang)) / (F1 * 2); s = FF(ang); }
+        else if (quadrant == 1) { c = -(F1 - fpm(FF(90 - ang), FF(90 - ang)) / (F1 * 2)); s = FF(90 - ang); }
+        else if (quadrant == 2) { c = -(F1 - fpm(FF(ang), FF(ang)) / (F1 * 2)); s = -FF(ang); }
+        else { c = F1 - fpm(FF(90 - ang), FF(90 - ang)) / (F1 * 2); s = -FF(90 - ang); }
+        fp x = fpm(radius, c);
+        fp y = fpm(radius, s);
+        if (i >= half) { x = -x; y = -y; }
+        unsigned noise = (unsigned)(i * 9973u + 65537u);
+        int nx = (int)(noise % 41) - 20;
+        int ny = (int)((noise * 1103515245u + 12345u) % 41) - 20;
+        int xi = FI(x) / F1 + nx;
+        int yi = FI(y) / F1 + ny;
+        char full[16];
+        full[0] = xi > 0 ? '1' : '0';
+        full[1] = ' ';
+        full[2] = yi > 0 ? '1' : '0';
+        full[3] = ' ';
+        full[4] = '0' + label;
+        full[5] = 0;
+        ds_add_sample(full);
+    }
+}
+
 static void record_loss(int si) {
     int v = FI((long long)slots[si].loss * 100 / F1);
     if (v > 100) v = 100; if (v < 0) v = 0;
@@ -55,13 +300,44 @@ static int alloc_slot(void) {
     return -1;
 }
 
+static void slot_alloc_vel(int si) {
+    nn *n = &slots[si].net;
+    for (int l = 0; l < n->nl - 1; l++) {
+        int nw = n->w[l].r * n->w[l].c;
+        int nb = n->b[l].r;
+        kfree(slots[si].vel_w[l]);
+        kfree(slots[si].vel_b[l]);
+        kfree(slots[si].adam_v_w[l]);
+        kfree(slots[si].adam_v_b[l]);
+        slots[si].vel_w[l] = (fp*)kmalloc(nw * sizeof(fp));
+        slots[si].vel_b[l] = (fp*)kmalloc(nb * sizeof(fp));
+        slots[si].adam_v_w[l] = (fp*)kmalloc(nw * sizeof(fp));
+        slots[si].adam_v_b[l] = (fp*)kmalloc(nb * sizeof(fp));
+        if (slots[si].vel_w[l])    for (int i = 0; i < nw; i++) slots[si].vel_w[l][i] = 0;
+        if (slots[si].vel_b[l])    for (int i = 0; i < nb; i++) slots[si].vel_b[l][i] = 0;
+        if (slots[si].adam_v_w[l]) for (int i = 0; i < nw; i++) slots[si].adam_v_w[l][i] = 0;
+        if (slots[si].adam_v_b[l]) for (int i = 0; i < nb; i++) slots[si].adam_v_b[l][i] = 0;
+    }
+}
+
+static void slot_free_vel(int si) {
+    nn *n = &slots[si].net;
+    for (int l = 0; l < n->nl - 1; l++) {
+        kfree(slots[si].vel_w[l]);    slots[si].vel_w[l] = 0;
+        kfree(slots[si].vel_b[l]);    slots[si].vel_b[l] = 0;
+        kfree(slots[si].adam_v_w[l]); slots[si].adam_v_w[l] = 0;
+        kfree(slots[si].adam_v_b[l]); slots[si].adam_v_b[l] = 0;
+    }
+}
+
 static void slot_init_net(int si, int nl, int *sz) {
-    if (slots[si].ready) nn_free(&slots[si].net);
+    if (slots[si].ready) { slot_free_vel(si); nn_free(&slots[si].net); }
     slots[si].ready = 0;
     if (nn_init(&slots[si].net, nl, sz)) return;
     nn_rand(&slots[si].net, FF(2));
     slots[si].ready = 1;
     slots[si].loss = F1;
+    slots[si].val_loss = F1;
     slots[si].steps = 0;
     slots[si].auto_mode = 0;
     slots[si].saved = 0;
@@ -71,6 +347,25 @@ static void slot_init_net(int si, int nl, int *sz) {
     slots[si].wgt_win = -1;
     slots[si].lr = default_lr;
     slots[si].epochs = default_epochs;
+    slots[si].mu = 0;
+    slots[si].lr_decay = F1;
+    slots[si].batch_size = 0;
+    slots[si].val_pct = 0;
+    slots[si].acc = 0;
+    slots[si].opt_type = OPT_SGD;
+    slots[si].opt_t = 0;
+    slots[si].beta1 = FF(0.9);
+    slots[si].beta2 = FF(0.999);
+    slots[si].eps = FF(0.00000001);
+    slots[si].l2_lambda = 0;
+    slots[si].clip_norm = 0;
+    slots[si].lr_sched_step = 0;
+    slots[si].lr_sched_factor = F1;
+    slots[si].early_stop_patience = 0;
+    slots[si].early_stop_counter = 0;
+    slots[si].best_val_loss = F1;
+    for (int i = 0; i < NN_MAX_L - 1; i++) { slots[si].vel_w[i] = 0; slots[si].vel_b[i] = 0; slots[si].adam_v_w[i] = 0; slots[si].adam_v_b[i] = 0; }
+    slot_alloc_vel(si);
     for (int i = 0; i < LOSS_HIST; i++) loss_hist[si][i] = 100;
     loss_pos[si] = 0;
     if (si >= slot_count) slot_count = si + 1;
@@ -122,22 +417,90 @@ void ai_create_net(int nl, int *sz) {
     slot_init_net(si, nl, sz);
 }
 
+static int train_slot(int si, int epochs) {
+    nn *n = &slots[si].net;
+    int di = slots[si].ds_idx;
+    if (di < 0 || !ds_loaded) return -1;
+
+    fp lr_initial = slots[si].lr;
+    fp lr_cur = lr_initial;
+    int n_train = ds.n;
+    if (slots[si].val_pct > 0 && slots[si].val_pct < 100)
+        n_train = ds.n * (100 - slots[si].val_pct) / 100;
+    if (n_train < 1) n_train = 1;
+
+    int bs = slots[si].batch_size > 0 ? slots[si].batch_size : n_train;
+    if (bs > n_train) bs = n_train;
+
+    int es = slots[si].early_stop_patience;
+
+    for (int e = 0; e < epochs; e++) {
+        /* LR scheduler */
+        if (slots[si].lr_sched_step > 0 && e > 0 && (e % slots[si].lr_sched_step) == 0)
+            lr_cur = fpm(lr_cur, slots[si].lr_sched_factor);
+
+        fp epoch_loss = 0;
+        int batches = (n_train + bs - 1) / bs;
+        for (int b = 0; b < batches; b++) {
+            int start = b * bs;
+            int end = start + bs;
+            if (end > n_train) end = n_train;
+            for (int i = start; i < end; i++) {
+                nn_fwd(n, ds.in + i * ds.ni);
+                epoch_loss += nn_bwd(n, ds.out + i * ds.no, lr_cur);
+            }
+            /* L2 regularization */
+            apply_l2(si, slots[si].l2_lambda);
+            /* Gradient clipping */
+            apply_gradient_clip(si, slots[si].clip_norm);
+            /* Optimizer step */
+            apply_optimizer(si, lr_cur);
+        }
+        slots[si].loss = epoch_loss / (n_train > 0 ? n_train : 1);
+
+        if (slots[si].lr_decay != F1)
+            lr_cur = fpm(lr_cur, slots[si].lr_decay);
+
+        /* Validation + accuracy */
+        if (slots[si].val_pct > 0) {
+            int nv = ds.n * slots[si].val_pct / 100;
+            if (nv > 0) {
+                slots[si].val_loss = compute_val_loss(si);
+                slots[si].acc = compute_accuracy(si, ds.n - nv, nv);
+                /* Early stopping */
+                if (es > 0) {
+                    if (slots[si].val_loss < slots[si].best_val_loss) {
+                        slots[si].best_val_loss = slots[si].val_loss;
+                        slots[si].early_stop_counter = 0;
+                    } else {
+                        slots[si].early_stop_counter++;
+                        if (slots[si].early_stop_counter >= es) {
+                            slots[si].lr = lr_cur;
+                            slots[si].steps += e * n_train;
+                            nn_fwd(n, ds.in);
+                            return 0;
+                        }
+                    }
+                }
+            }
+        }
+        record_loss(si);
+    }
+    slots[si].lr = lr_cur;
+    slots[si].steps += epochs * n_train;
+    nn_fwd(n, ds.in);
+    return 0;
+}
+
 int ai_train_net(int ep, int lr_int) {
+    mutex_lock(&mutex_ai);
     int si = active_slot;
-    if (!slots[si].ready) return -1;
+    if (!slots[si].ready) { mutex_unlock(&mutex_ai); return -1; }
     slots[si].lr = (fp)((long long)lr_int * F1 / 100);
     slots[si].epochs = ep > 0 ? ep : 1;
     slots[si].auto_mode = 0;
-    int di = slots[si].ds_idx;
-    if (di >= 0 && ds_loaded) {
-        for (int e = 0; e < ep; e++)
-            slots[si].loss = ds_train_epoch(&slots[si].net, &ds, slots[si].lr);
-        slots[si].steps += ep * ds.n;
-        nn_fwd(&slots[si].net, ds.in);
-        record_loss(si);
-        return 0;
-    }
-    return -2;
+    int r = train_slot(si, slots[si].epochs);
+    mutex_unlock(&mutex_ai); return r;
 }
 
 int ai_infer_slot(int si, fp *in, fp *out) {
@@ -147,26 +510,28 @@ int ai_infer_slot(int si, fp *in, fp *out) {
 }
 
 int ai_save_model_slot(int si, const char *path) {
-    if (si < 0 || si >= slot_count || !slots[si].ready) return -1;
-    if (nn_save_file(&slots[si].net, path) == 0) { slots[si].saved = 1; return 0; }
-    return -1;
+    mutex_lock(&mutex_ai);
+    if (si < 0 || si >= slot_count || !slots[si].ready) { mutex_unlock(&mutex_ai); return -1; }
+    int r = nn_save_file(&slots[si].net, path);
+    if (r == 0) slots[si].saved = 1;
+    mutex_unlock(&mutex_ai); return r == 0 ? 0 : -1;
 }
 
 int ai_load_model_slot(int si, const char *path) {
-    if (si < 0 || si >= slot_count) return -1;
-    nn saved;
-    if (nn_load_file(&saved, path) != 0) return -1;
+    mutex_lock(&mutex_ai);
+    if (si < 0 || si >= slot_count) { mutex_unlock(&mutex_ai); return -1; }
+    nn tmp;
+    if (nn_load_file(&tmp, path)) { mutex_unlock(&mutex_ai); return -2; }
     if (slots[si].ready) nn_free(&slots[si].net);
-    slots[si].net = saved;
-    slots[si].ready = 1;
-    slots[si].saved = 0;
-    slots[si].steps = 0;
-    slots[si].loss = F1;
-    slots[si].auto_mode = 0;
-    slots[si].ds_idx = -1;
+    slots[si].net = tmp; slots[si].ready = 1;
+    slots[si].loss = F1; slots[si].steps = 0;
+    slots[si].auto_mode = 0; slots[si].saved = 1;
+    slots[si].ds_idx = -1; slots[si].lr = FF(0.5); slots[si].epochs = 100;
+    for (int i = 0; i < LOSS_HIST; i++) loss_hist[si][i] = 100;
+    loss_pos[si] = 0;
     if (si >= slot_count) slot_count = si + 1;
     active_slot = si;
-    return 0;
+    mutex_unlock(&mutex_ai); return 0;
 }
 
 void ai_set_act(int layer, int act) {
@@ -189,6 +554,82 @@ void ai_set_epochs(int ep) {
     default_epochs = ep > 0 ? ep : 100;
     int si = active_slot;
     if (si >= 0 && si < slot_count && slots[si].ready) slots[si].epochs = default_epochs;
+}
+void ai_set_mu(int mu_int) {
+    fp mu_fp = (fp)((long long)mu_int * F1 / 100);
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].mu = mu_fp;
+}
+void ai_set_lr_decay(int dec_int) {
+    fp dec_fp = (fp)((long long)dec_int * F1 / 100);
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].lr_decay = dec_fp;
+}
+void ai_set_val_pct(int pct) {
+    if (pct < 0) pct = 0;
+    if (pct > 50) pct = 50;
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].val_pct = pct;
+}
+void ai_set_batch(int bs) {
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].batch_size = bs;
+}
+void ai_set_opt(int opt) {
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) {
+        if (opt < 0) opt = 0;
+        if (opt > 2) opt = 2;
+        slots[si].opt_type = opt;
+        nn *n = &slots[si].net;
+        for (int l = 0; l < n->nl - 1; l++) {
+            int nw = n->w[l].r * n->w[l].c;
+            int nb = n->b[l].r;
+            for (int i = 0; i < nw; i++) { slots[si].vel_w[l][i] = 0; slots[si].adam_v_w[l][i] = 0; }
+            for (int i = 0; i < nb; i++) { slots[si].vel_b[l][i] = 0; slots[si].adam_v_b[l][i] = 0; }
+        }
+        slots[si].opt_t = 0;
+    }
+}
+void ai_set_adam_beta1(int b1) {
+    if (b1 < 50 || b1 > 99) return;
+    fp b1f = (fp)((long long)b1 * F1 / 100);
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].beta1 = b1f;
+}
+void ai_set_adam_beta2(int b2) {
+    if (b2 < 900 || b2 > 999) return;
+    fp b2f = (fp)((long long)b2 * F1 / 1000);
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].beta2 = b2f;
+}
+void ai_set_weight_decay(int wd) {
+    fp wdf = (fp)((long long)wd * F1 / 10000);
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].l2_lambda = wdf;
+}
+void ai_set_clip(int clip) {
+    fp cf = (fp)((long long)clip * F1 / 100);
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].clip_norm = cf;
+}
+void ai_set_es_patience(int ep) {
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) {
+        slots[si].early_stop_patience = ep;
+        slots[si].early_stop_counter = 0;
+        slots[si].best_val_loss = F1;
+    }
+}
+void ai_set_lr_step(int step) {
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].lr_sched_step = step;
+}
+void ai_set_lr_factor(int fact) {
+    if (fact < 10 || fact > 99) return;
+    fp ff = (fp)((long long)fact * F1 / 100);
+    int si = active_slot;
+    if (si >= 0 && si < slot_count && slots[si].ready) slots[si].lr_sched_factor = ff;
 }
 
 /* ===== OLD API WRAPPERS (delegate to active slot) ===== */
@@ -224,7 +665,11 @@ int ai_infer_str(const char *in_str, char *out_str, int max) {
         if ((*in_str < '0' || *in_str > '9') && *in_str != '-') { in_str++; continue; }
         int val = 0, neg = 0;
         if (*in_str == '-') { neg = 1; in_str++; }
-        while (*in_str >= '0' && *in_str <= '9') val = val * 10 + (*in_str++ - '0');
+        while (*in_str >= '0' && *in_str <= '9') {
+            int d = *in_str++ - '0';
+            if (val > 214748364) { val = 2147483647; while (*in_str >= '0' && *in_str <= '9') in_str++; break; }
+            val = val * 10 + d;
+        }
         in[count++] = FF(neg ? -val : val);
     }
     if (count != n->sz[0]) return -2;
@@ -248,13 +693,16 @@ void ai_bg_task(void) {
         for (int si = 0; si < slot_count; si++) {
             if (!slots[si].ready || !slots[si].auto_mode) continue;
             int di = slots[si].ds_idx;
-            if (di >= 0 && ds_loaded) {
+            if (di >= 0 && di < ds.n && ds_loaded) {
+                mutex_lock(&mutex_ai);
                 nn_fwd(&slots[si].net, ds.in + di * ds.ni);
                 slots[si].loss = ds_train_epoch(&slots[si].net, &ds, slots[si].lr);
                 slots[si].steps += ds.n;
                 record_loss(si);
+                mutex_unlock(&mutex_ai);
             }
         }
+        __asm__ volatile("hlt");
         task_yield();
     }
 }
@@ -294,7 +742,11 @@ int ds_add_sample(const char *str) {
         if ((*str < '0' || *str > '9') && *str != '-') break;
         int v = 0, neg = 0;
         if (*str == '-') { neg = 1; str++; }
-        while (*str >= '0' && *str <= '9') v = v * 10 + (*str++ - '0');
+        while (*str >= '0' && *str <= '9') {
+            int d = *str++ - '0';
+            if (v > 214748364) { v = 2147483647; while (*str >= '0' && *str <= '9') str++; break; }
+            v = v * 10 + d;
+        }
         vals[nv++] = neg ? -v : v;
     }
     if (nv != mgr_ds.ni + mgr_ds.no) return -2;
@@ -340,6 +792,32 @@ void ds_clear_mgr(void) {
     mgr_ready = 0; mgr_ds.n = 0;
 }
 
+int ds_generate(const char *type) {
+    int ni = 2, no = 1;
+    if (ds_create_mgr(ni, no)) return -1;
+    if (type[0] == 'X' || type[0] == 'x') {
+        ds_add_sample("0 0 0");
+        ds_add_sample("0 1 1");
+        ds_add_sample("1 0 1");
+        ds_add_sample("1 1 0");
+    } else if (type[0] == 'A' || type[0] == 'a') {
+        ds_add_sample("0 0 0");
+        ds_add_sample("0 1 0");
+        ds_add_sample("1 0 0");
+        ds_add_sample("1 1 1");
+    } else if (type[0] == 'O' || type[0] == 'o') {
+        ds_add_sample("0 0 0");
+        ds_add_sample("0 1 1");
+        ds_add_sample("1 0 1");
+        ds_add_sample("1 1 1");
+    } else if (type[0] == 'C' || type[0] == 'c') {
+        gen_circle_dataset(100);
+    } else if (type[0] == 'S' || type[0] == 's') {
+        gen_spiral_dataset(200);
+    } else return -1;
+    return 0;
+}
+
 int ai_export_text_ds(const char *path) {
     if (!mgr_ready || mgr_ds.n == 0) return -1;
     return ds_export_text(&mgr_ds, path);
@@ -376,12 +854,13 @@ static void draw_loss_graph(int bx, int by, int w, int h, int si) {
 void ai_draw(int id) {
     window_t *win = wm_get(id);
     if (!win) return;
+    mutex_lock(&mutex_ai);
     int bx = win->x, by = win->y;
     int si = -1;
     for (int i = 0; i < NN_SLOTS; i++)
         if (slots[i].win_id == id) { si = i; break; }
-    if (si < 0) { vga_drawstring(bx + 5, by + 15, tr(S_NEURAL), 7, 1); return; }
-    if (!slots[si].ready) { vga_drawstring(bx + 5, by + 15, tr(S_NONET), 7, 1); return; }
+    if (si < 0) { vga_drawstring(bx + 5, by + 15, tr(S_NEURAL), 7, 1); mutex_unlock(&mutex_ai); return; }
+    if (!slots[si].ready) { vga_drawstring(bx + 5, by + 15, tr(S_NONET), 7, 1); mutex_unlock(&mutex_ai); return; }
 
     nn *n = &slots[si].net;
     vga_drawstring(bx + 5, by + 15, tr(S_NEURAL), 10, 1);
@@ -452,13 +931,83 @@ void ai_draw(int id) {
     vga_drawstring(bx + 5, row, tr(S_LR), 7, 1);
     vga_drawstring(bx + 35, row, dbuf, 11, 1);
 
+    row += 10;
+    vga_drawstring(bx + 5, row, "Opt:", 7, 1);
+    const char *opt_s = "SGD";
+    if (slots[si].opt_type == OPT_MOMENTUM) opt_s = "MOM";
+    if (slots[si].opt_type == OPT_ADAM) opt_s = "ADM";
+    vga_drawstring(bx + 30, row, opt_s, 11, 1);
+    if (slots[si].opt_type == OPT_MOMENTUM) {
+        vga_drawstring(bx + 60, row, "Mu:", 7, 1);
+        int mu_int = FI(slots[si].mu * 100);
+        itoa(mu_int, dbuf);
+        vga_drawstring(bx + 80, row, dbuf, 11, 1);
+    }
+
+    row += 10;
+    vga_drawstring(bx + 5, row, "Decay:", 7, 1);
+    int dec_int = FI(slots[si].lr_decay * 100);
+    itoa(dec_int, dbuf);
+    vga_drawstring(bx + 45, row, dbuf, 11, 1);
+
+    if (slots[si].l2_lambda > 0) {
+        vga_drawstring(bx + 65, row, "L2:", 7, 1);
+        int l2v = FI(slots[si].l2_lambda * 1000);
+        itoa(l2v, dbuf);
+        vga_drawstring(bx + 80, row, dbuf, 11, 1);
+    }
+
+    row += 10;
+    if (slots[si].clip_norm > 0) {
+        vga_drawstring(bx + 5, row, "Clip:", 7, 1);
+        int cv = FI(slots[si].clip_norm * 100);
+        itoa(cv, dbuf);
+        vga_drawstring(bx + 35, row, dbuf, 11, 1);
+    }
+    if (slots[si].lr_sched_step > 0) {
+        vga_drawstring(bx + 60, row, "LS:", 7, 1);
+        itoa(slots[si].lr_sched_step, dbuf);
+        vga_drawstring(bx + 78, row, dbuf, 11, 1);
+        vga_drawchar(bx + 90, row, '/', 7, 1);
+        int lsf = FI(slots[si].lr_sched_factor * 100);
+        itoa(lsf, dbuf);
+        vga_drawstring(bx + 95, row, dbuf, 11, 1);
+    }
+
+    if (slots[si].val_pct > 0) {
+        row += 10;
+        vga_drawstring(bx + 5, row, "Val:", 7, 1);
+        int vl = FI((long long)slots[si].val_loss * 100 / F1);
+        if (vl > 100) vl = 100; if (vl < 0) vl = 0;
+        itoa(vl, dbuf);
+        vga_drawstring(bx + 30, row, dbuf, vl < 30 ? 10 : 6, 1);
+        if (slots[si].acc > 0) {
+            vga_drawstring(bx + 55, row, "Acc:", 7, 1);
+            int av = FI(slots[si].acc * 100);
+            itoa(av, dbuf);
+            vga_drawstring(bx + 80, row, dbuf, av > 50 ? 10 : 6, 1);
+        }
+        if (slots[si].early_stop_patience > 0) {
+            vga_drawstring(bx + 100, row, "ES:", 7, 1);
+            itoa(slots[si].early_stop_counter, dbuf);
+            vga_drawstring(bx + 120, row, dbuf, 8, 1);
+        }
+    }
+
     if (slots[si].ds_idx >= 0 && ds_loaded) {
         row += 10;
         vga_drawstring(bx + 5, row, tr(S_DS), 7, 1);
         vga_drawstring(bx + 25, row, ": ", 7, 1);
         itoa(ds.n, dbuf);
         vga_drawstring(bx + 30, row, dbuf, 8, 1);
-        vga_drawstring(bx + 50, row, tr(S_SAMPLES), 7, 1);
+        if (slots[si].val_pct > 0) {
+            int ntrain = ds.n * (100 - slots[si].val_pct) / 100;
+            vga_drawstring(bx + 50, row, "T:", 7, 1);
+            itoa(ntrain, dbuf);
+            vga_drawstring(bx + 65, row, dbuf, 8, 1);
+        } else {
+            vga_drawstring(bx + 50, row, tr(S_SAMPLES), 7, 1);
+        }
     }
     if (slots[si].auto_mode) {
         row += 10;
@@ -468,28 +1017,24 @@ void ai_draw(int id) {
     row = win->y + win->h - 55;
     vga_drawstring(bx + 5, row, "[T]rain [A]uto [S]ave [L]oad", 7, 1);
     row += 8;
-    vga_drawstring(bx + 5, row, "[E]xprt [D]set [I]nfer [C]fg", 7, 1);
+    vga_drawstring(bx + 5, row, "[E]xprt [D]set [I]nfer [O]pt", 7, 1);
     if (slots[si].saved)
         vga_drawstring(bx + win->w - 50, by + 17, tr(S_SAVED), 10, 1);
+    mutex_unlock(&mutex_ai);
 }
 
 void ai_keypress(int id, char c) {
+    mutex_lock(&mutex_ai);
     int si = -1;
     for (int i = 0; i < NN_SLOTS; i++)
         if (slots[i].win_id == id) { si = i; break; }
-    if (si < 0 || !slots[si].ready) return;
+    if (si < 0 || !slots[si].ready) { mutex_unlock(&mutex_ai); return; }
     active_slot = si;
 
     int di = slots[si].ds_idx;
     if (c == 't' || c == 'T') {
         slots[si].auto_mode = 0;
-        if (di >= 0 && ds_loaded) {
-            for (int e = 0; e < slots[si].epochs; e++)
-                slots[si].loss = ds_train_epoch(&slots[si].net, &ds, slots[si].lr);
-            slots[si].steps += slots[si].epochs * ds.n;
-            nn_fwd(&slots[si].net, ds.in);
-            record_loss(si);
-        }
+        train_slot(si, slots[si].epochs);
     }
     if (c == 'a' || c == 'A') slots[si].auto_mode = !slots[si].auto_mode;
     if (c == 's' || c == 'S') {
@@ -521,13 +1066,30 @@ void ai_keypress(int id, char c) {
         if (ai_export_txt(path) == 0) slots[si].saved = 1;
     }
     if (c == 'd' || c == 'D') {
-        if (ds_load(&ds, "XORDSET.BIN") == 0) {
+        /* Cycle through datasets */
+        static int ds_cycle = -1;
+        static const char *ds_cycle_names[] = {"XOR", "AND", "OR", "CIRCLE", "SPIRAL"};
+        ds_cycle = (ds_cycle + 1) % 5;
+        if (ds_generate(ds_cycle_names[ds_cycle]) == 0) {
             ds_loaded = 1;
             slot_init_net(si, 3, (int[]){ds.ni, 6, ds.no});
             slots[si].ds_idx = 0;
             slots[si].loss = F1;
             nn_fwd(&slots[si].net, ds.in);
         }
+    }
+    if (c == 'o' || c == 'O') {
+        /* Cycle optimizer: SGD -> MOM -> ADAM */
+        slots[si].opt_type = (slots[si].opt_type + 1) % 3;
+        /* Reset velocity/Adam buffers on switch */
+        nn *n = &slots[si].net;
+        for (int l = 0; l < n->nl - 1; l++) {
+            int nw = n->w[l].r * n->w[l].c;
+            int nb = n->b[l].r;
+            for (int i = 0; i < nw; i++) { slots[si].vel_w[l][i] = 0; slots[si].adam_v_w[l][i] = 0; }
+            for (int i = 0; i < nb; i++) { slots[si].vel_b[l][i] = 0; slots[si].adam_v_b[l][i] = 0; }
+        }
+        slots[si].opt_t = 0;
     }
     if (c == 'i' || c == 'I') {
         if (di >= 0 && ds_loaded) nn_fwd(&slots[si].net, ds.in + di * ds.ni);
@@ -541,14 +1103,15 @@ void ai_keypress(int id, char c) {
 void ai_editor_draw(int id) {
     window_t *win = wm_get(id);
     if (!win) return;
+    mutex_lock(&mutex_ai);
     int bx = win->x, by = win->y;
     int si = -1;
     for (int i = 0; i < NN_SLOTS; i++)
         if (slots[i].edit_win == id) { si = i; break; }
-    if (si < 0) { vga_drawstring(bx + 5, by + 15, tr(S_NNEDIT), 10, 1); return; }
+    if (si < 0) { mutex_unlock(&mutex_ai); vga_drawstring(bx + 5, by + 15, tr(S_NNEDIT), 10, 1); return; }
 
     nn *n = &slots[si].net;
-    if (!slots[si].ready) { vga_drawstring(bx + 5, by + 15, tr(S_NONET), 7, 1); return; }
+    if (!slots[si].ready) { mutex_unlock(&mutex_ai); vga_drawstring(bx + 5, by + 15, tr(S_NONET), 7, 1); return; }
 
     vga_drawstring(bx + 5, by + 15, tr(S_NNEDIT), 10, 1);
     char buf[4]; itoa(si, buf);
@@ -575,30 +1138,33 @@ void ai_editor_draw(int id) {
     vga_drawstring(bx + 5, row, "[F] sig [R]elu [T]anh", 7, 1);
     row += 10;
     vga_drawstring(bx + 5, row, "[C]reate network", 11, 1);
+    mutex_unlock(&mutex_ai);
 }
 
 void ai_editor_keypress(int id, char c) {
+    mutex_lock(&mutex_ai);
     int si = -1;
     for (int i = 0; i < NN_SLOTS; i++)
         if (slots[i].edit_win == id) { si = i; break; }
-    if (si < 0 || !slots[si].ready) return;
+    if (si < 0 || !slots[si].ready) { mutex_unlock(&mutex_ai); return; }
     nn *n = &slots[si].net;
     static int sel = 0;
 
     if (c == '+') {
         if (n->nl >= NN_MAX_L) return;
         int newsz[NN_MAX_L + 1];
-        for (int i = 0; i < n->nl; i++) newsz[i] = n->sz[i];
+        int saved_acts[NN_MAX_L];
+        for (int i = 0; i < n->nl; i++) { newsz[i] = n->sz[i]; saved_acts[i] = n->acts[i]; }
         newsz[n->nl] = n->sz[n->nl - 1];
-        nn saved;
         slot_init_net(si, n->nl + 1, newsz);
-        if (n->nl > 1) for (int i = 0; i < n->nl - 2; i++) slots[si].net.acts[i + 1] = n->acts[i + 1];
+        for (int i = 1; i < n->nl; i++) slots[si].net.acts[i] = (nn_act_t)saved_acts[i];
     }
     if (c == '-') {
         if (n->nl <= 2) return;
         int newsz[NN_MAX_L];
         for (int i = 0; i < n->nl - 1; i++) newsz[i] = n->sz[i];
         slot_init_net(si, n->nl - 1, newsz);
+        if (sel >= n->nl) sel = n->nl - 1;
     }
     if (c == 'n' || c == 'N') {
         if (n->sz[sel] < 30) { n->sz[sel]++; slot_init_net(si, n->nl, n->sz); }
@@ -616,6 +1182,7 @@ void ai_editor_keypress(int id, char c) {
     if (c == 'c' || c == 'C') {
         slot_init_net(si, n->nl, n->sz);
     }
+    mutex_unlock(&mutex_ai);
 }
 
 /* ===== WINDOW: DATASET VIEWER ===== */
@@ -631,12 +1198,11 @@ void ai_ds_draw(int id) {
     vga_drawstring(bx + 60, by + 15, buf, 8, 1);
     vga_drawstring(bx + 80, by + 15, tr(S_SAMPLES), 7, 1);
 
-    static int scroll = 0;
     int max_vis = (win->h - 30) / 10;
     if (max_vis < 1) max_vis = 1;
 
-    for (int i = 0; i < max_vis && i + scroll < ds.n; i++) {
-        int si2 = i + scroll;
+    for (int i = 0; i < max_vis && i + ds_scroll < ds.n; i++) {
+        int si2 = i + ds_scroll;
         int row = by + 28 + i * 10;
         vga_drawchar(bx + 5, row, '0' + (si2 / 10) % 10, 8, 1);
         vga_drawchar(bx + 9, row, '0' + si2 % 10, 8, 1);
@@ -656,15 +1222,15 @@ void ai_ds_draw(int id) {
     vga_drawstring(bx + 5, win->y + win->h - 12, "[U]p [D]n [C]ls", 7, 1);
 }
 
+
 void ai_ds_keypress(int id, char c) {
     (void)id;
-    static int scroll = 0;
     if (!ds_loaded) return;
-    if (c == 0x80 && scroll > 0) scroll--;
-    if (c == 0x81 && scroll < ds.n - 1) scroll++;
-    if (c == 'u' || c == 'U') scroll = scroll > 0 ? scroll - 1 : 0;
-    if (c == 'd' || c == 'D') scroll = scroll < ds.n - 1 ? scroll + 1 : scroll;
-    if (c == 'c' || c == 'C') { scroll = 0; wm_close(id); }
+    if (c == 0x80 && ds_scroll > 0) ds_scroll--;
+    if (c == 0x81 && ds_scroll < ds.n - 1) ds_scroll++;
+    if (c == 'u' || c == 'U') ds_scroll = ds_scroll > 0 ? ds_scroll - 1 : 0;
+    if (c == 'd' || c == 'D') ds_scroll = ds_scroll < ds.n - 1 ? ds_scroll + 1 : ds_scroll;
+    if (c == 'c' || c == 'C') { ds_scroll = 0; wm_close(id); }
 }
 
 /* ===== WINDOW: WEIGHT / NEURON DETAIL ===== */
@@ -722,10 +1288,11 @@ void ai_weights_draw(int id) {
 }
 
 void ai_weights_keypress(int id, char c) {
+    mutex_lock(&mutex_ai);
     int si = -1;
     for (int i = 0; i < NN_SLOTS; i++)
         if (slots[i].wgt_win == id) { si = i; break; }
-    if (si < 0 || !slots[si].ready) return;
+    if (si < 0 || !slots[si].ready) { mutex_unlock(&mutex_ai); return; }
     nn *n = &slots[si].net;
     if (c == '<' || c == ',') {
         if (wgt_sel_layer > 0) wgt_sel_layer--;
@@ -734,14 +1301,16 @@ void ai_weights_keypress(int id, char c) {
         if (wgt_sel_layer < n->nl - 2) wgt_sel_layer++;
     }
     (void)id;
+    mutex_unlock(&mutex_ai);
 }
 
 /* ===== SHELL: WINDOW LAUNCHERS ===== */
 void ai_open_trainer(int si) {
-    if (si < 0 || si >= slot_count || !slots[si].ready) return;
+    mutex_lock(&mutex_ai);
+    if (si < 0 || si >= slot_count || !slots[si].ready) { mutex_unlock(&mutex_ai); return; }
     if (slots[si].win_id >= 0) {
         window_t *w = wm_get(slots[si].win_id);
-        if (w && w->visible) { wm_focus(slots[si].win_id); return; }
+        if (w && w->visible) { mutex_unlock(&mutex_ai); wm_focus(slots[si].win_id); return; }
         slots[si].win_id = -1;
     }
     char title[24]; int ti = 0;
@@ -752,13 +1321,15 @@ void ai_open_trainer(int si) {
     itoa(si, title + ti);
     int wid = wm_create(10, 10 + si * 30, 220, 240, title, ai_draw, ai_keypress, 0);
     slots[si].win_id = wid;
+    mutex_unlock(&mutex_ai);
 }
 
 void ai_open_editor(int si) {
-    if (si < 0 || si >= slot_count || !slots[si].ready) return;
+    mutex_lock(&mutex_ai);
+    if (si < 0 || si >= slot_count || !slots[si].ready) { mutex_unlock(&mutex_ai); return; }
     if (slots[si].edit_win >= 0) {
         window_t *w = wm_get(slots[si].edit_win);
-        if (w && w->visible) { wm_focus(slots[si].edit_win); return; }
+        if (w && w->visible) { mutex_unlock(&mutex_ai); wm_focus(slots[si].edit_win); return; }
         slots[si].edit_win = -1;
     }
     char title[24]; int ti = 0;
@@ -769,6 +1340,7 @@ void ai_open_editor(int si) {
     itoa(si, title + ti);
     int wid = wm_create(250, 10 + si * 30, 180, 160, title, ai_editor_draw, ai_editor_keypress, 0);
     slots[si].edit_win = wid;
+    mutex_unlock(&mutex_ai);
 }
 
 void ai_open_ds_view(void) {
@@ -782,10 +1354,11 @@ void ai_open_ds_view(void) {
 }
 
 void ai_open_weights(int si) {
-    if (si < 0 || si >= slot_count || !slots[si].ready) return;
+    mutex_lock(&mutex_ai);
+    if (si < 0 || si >= slot_count || !slots[si].ready) { mutex_unlock(&mutex_ai); return; }
     if (slots[si].wgt_win >= 0) {
         window_t *w = wm_get(slots[si].wgt_win);
-        if (w && w->visible) { wm_focus(slots[si].wgt_win); return; }
+        if (w && w->visible) { mutex_unlock(&mutex_ai); wm_focus(slots[si].wgt_win); return; }
         slots[si].wgt_win = -1;
     }
     char title[24]; int ti = 0;
@@ -798,12 +1371,13 @@ void ai_open_weights(int si) {
     wgt_si = si;
     wgt_sel_layer = 0;
     slots[si].wgt_win = wid;
+    mutex_unlock(&mutex_ai);
 }
 
 int ai_select_slot(int si) {
-    if (si < 0 || si >= NN_SLOTS || !slots[si].ready) return -1;
-    active_slot = si;
-    return 0;
+    mutex_lock(&mutex_ai);
+    int r = (si >= 0 && si < NN_SLOTS && slots[si].ready) ? (active_slot = si, 0) : -1;
+    mutex_unlock(&mutex_ai); return r;
 }
 
 int ai_get_slot_count(void) { return slot_count; }

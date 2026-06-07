@@ -1,9 +1,8 @@
-; FAT12 bootloader for CortexOS
-; Supports QEMU (extended INT 13h) and VirtualBox (CHS fallback)
+; CortexOS bootloader: floppy + HDD with partition table
 [org 0x7C00]
 [bits 16]
 
-; --- BIOS Parameter Block ---
+; --- BIOS Parameter Block (FAT12 floppy compatible) ---
     jmp short start
     nop
     db 'CORTEXOS'     ; OEM (8)
@@ -21,7 +20,7 @@
     dd 0              ; large sectors
 
 ; Extended BPB
-    db 0              ; drive number (BIOS sets this)
+    db 0              ; drive number
     db 0              ; reserved
     db 0x29           ; signature
     dd 0x20250530     ; volume serial
@@ -41,17 +40,23 @@ start:
     mov si, msg_loading
     call print
 
+    ; Read from LBA base (partition start or absolute)
+    mov eax, [kernel_base_lba]
+
     ; Try extended read (INT 13h AH=42h)
     mov di, 0x0600
     mov byte [di], 0x10
     mov byte [di+1], 0
-    mov word [di+2], 128
-    mov word [di+4], 0x7E00
+
+    ; Calculate kernel size in sectors
+    mov ebx, [kernel_size_bytes]
+    add ebx, 511
+    shr ebx, 9
+    mov word [di+2], bx    ; sectors to read
+
+    mov word [di+4], 0x7E00    ; buffer
     mov word [di+6], 0
-    mov ax, [kernel_lba]
-    mov [di+8], ax
-    mov ax, [kernel_lba+2]
-    mov [di+10], ax
+    mov [di+8], eax
     mov word [di+12], 0
     mov word [di+14], 0
 
@@ -61,34 +66,31 @@ start:
     int 0x13
     jnc loaded
 
-    ; CHS fallback (for VirtualBox floppy, old BIOS, etc.)
-    mov ax, [kernel_lba]
-    mov dx, [kernel_lba+2]
-    mov cx, 128
+    ; CHS fallback
+    mov eax, [kernel_base_lba]
+    mov cx, 400
     mov di, 0x7E00
 
 .chs:
-    mov [lba_lo], ax
-    mov [lba_hi], dx
+    mov [lba_val], eax
     push cx
     push di
 
-    ; LBA -> CHS: sector = (LBA % 18) + 1, track = LBA / 18
-    mov cx, 18
-    div cx
+    mov ebx, eax
+    xor edx, edx
+    movzx ecx, byte [bp_sec_per_track]
+    div ecx
     inc dx
     mov [sec], dl
 
-    ; track -> CHS: cylinder = track / 2, head = track % 2
-    xor dx, dx
-    mov cx, 2
-    div cx
+    xor edx, edx
+    movzx ecx, byte [bp_heads]
+    div ecx
     mov ch, al
     mov cl, [sec]
     mov dh, dl
 
-    pop bx
-    push bx
+    mov bx, di
     mov ah, 0x02
     mov al, 1
     mov dl, [boot_drive]
@@ -98,10 +100,8 @@ start:
     pop di
     pop cx
     add di, 512
-    mov ax, [lba_lo]
-    mov dx, [lba_hi]
-    add ax, 1
-    adc dx, 0
+    mov eax, [lba_val]
+    inc eax
     dec cx
     jnz .chs
 
@@ -125,13 +125,24 @@ print:
 .done:
     ret
 
-msg_loading db 'CortexOS v1.0', 0x0D, 0x0A, 'Loading...', 0
+msg_loading db 'CortexOS', 0x0D, 0x0A, 0
 msg_err db 'ERR', 0
 boot_drive db 0
-lba_lo dw 0
-lba_hi dw 0
 sec db 0
+lba_val dd 0
+bp_sec_per_track dw 18
+bp_heads dw 2
 
-times 506-($-$$) db 0
-kernel_lba dd 1      ; Patched by build script (LBA of first kernel sector)
+times 438-($-$$) db 0
+
+; Kernel location (4 bytes each, at offsets 438 and 442)
+kernel_base_lba:
+    dd 1                ; Start LBA of kernel
+kernel_size_bytes:
+    dd 0                ; Kernel size in bytes (patched at build time)
+
+; Partition table at offset 446 (0x1BE)
+partition_table:
+times 64 db 0
+
 dw 0xAA55

@@ -2,9 +2,13 @@ section .data
 global task_saved_esp
 global task_switch_pending
 global task_new_esp
+global syscall_handler_asm
 task_saved_esp: dd 0
 task_switch_pending: dd 0
 task_new_esp: dd 0
+current_irq: dd 0
+irq_stack: times 256 dd 0
+irq_stack_ptr: dd irq_stack + 1024
 
 section .text
 
@@ -47,6 +51,8 @@ ISR_ERR 12
 ISR_ERR 13
 ISR_ERR 14
 ISR_NOERR 15
+ISR_NOERR 16
+ISR_ERR 17
 
 IRQ 0, 32
 IRQ 1, 33
@@ -61,9 +67,11 @@ IRQ 9, 41
 IRQ 10, 42
 IRQ 11, 43
 IRQ 12, 44
+IRQ 13, 45
 
 extern isr_handler_c
 extern irq_handler_c
+extern syscall_handler
 
 isr_common_stub:
     pushad
@@ -103,7 +111,23 @@ irq_common_stub:
     mov [task_saved_esp], esp
 
     mov eax, [esp + 40]
-    cmp eax, 40
+    mov [current_irq], eax
+
+    mov esp, [irq_stack_ptr]
+
+    push dword [current_irq]
+    call irq_handler_c
+    add esp, 4
+
+    cmp dword [task_switch_pending], 0
+    je .restore
+    mov esp, [task_new_esp]
+    mov dword [task_switch_pending], 0
+    jmp .eoi
+.restore:
+    mov esp, [task_saved_esp]
+.eoi:
+    cmp dword [current_irq], 40
     jl .master
     mov al, 0x20
     out 0xA0, al
@@ -111,21 +135,41 @@ irq_common_stub:
     mov al, 0x20
     out 0x20, al
 
-    mov eax, [esp + 40]
-    push eax
-    call irq_handler_c
-    add esp, 4
-
-    cmp dword [task_switch_pending], 0
-    je .no_switch
-    mov esp, [task_new_esp]
-    mov dword [task_switch_pending], 0
-.no_switch:
-
     pop eax
     mov es, ax
     pop eax
     mov ds, ax
     popad
     add esp, 8
+    iret
+
+syscall_handler_asm:
+    cli
+    pushad
+    mov ax, ds
+    push eax
+    mov ax, es
+    push eax
+
+    mov ax, 0x10
+    mov ds, ax
+    mov es, ax
+
+    push edi
+    push esi
+    push edx
+    push ecx
+    push ebx
+    push eax
+    call syscall_handler
+    add esp, 24
+
+    mov dword [esp + 36], eax
+
+    pop eax
+    mov es, ax
+    pop eax
+    mov ds, ax
+    popad
+    sti
     iret

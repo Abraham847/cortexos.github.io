@@ -2,7 +2,7 @@
 set -e
 DIR=/mnt/c/Users/Colibecas/Desktop/ios/kronos
 CC=/home/olibecas/gcc-cross/bin/i686-linux-musl-gcc
-I="-I$DIR/kernel -I$DIR/kernel/core -I$DIR/kernel/drivers -I$DIR/kernel/ui -I$DIR/kernel/ml -I$DIR/kernel/apps"
+I="-I$DIR/kernel -I$DIR/kernel/core -I$DIR/kernel/drivers -I$DIR/kernel/ui -I$DIR/kernel/ml -I$DIR/kernel/apps -I$DIR/kernel/arch"
 FLAGS="-ffreestanding -nostdlib -nostartfiles -m32 -fno-pic -mno-red-zone -c $I"
 
 echo "=== Cleaning old objects ==="
@@ -10,7 +10,8 @@ rm -f $DIR/kernel/*.o $DIR/kernel/core/*.o $DIR/kernel/drivers/*.o $DIR/kernel/u
 
 echo "=== Compiling C files ==="
 FILES="kernel \
-  core/heap core/task core/idt core/ipc core/event_queue \
+  core/heap core/task core/idt core/ipc core/event_queue core/synch \
+  arch/x86 \
   drivers/vga drivers/keyboard drivers/mouse drivers/timer drivers/ata drivers/fs \
   ui/desktop ui/window ui/shell ui/sysmon ui/fman ui/boot ui/editor ui/forth ui/paint ui/lang \
   ml/nn ml/ai ml/model ml/aidemo \
@@ -34,7 +35,8 @@ ld -m elf_i386 \
   -o $DIR/kernel.elf -T $DIR/kernel.ld -nostdlib \
   $DIR/kernel/entry.o $DIR/kernel/isr.o \
   $DIR/kernel/kernel.o \
-  $DIR/kernel/core/heap.o $DIR/kernel/core/task.o $DIR/kernel/core/idt.o $DIR/kernel/core/ipc.o $DIR/kernel/core/event_queue.o \
+  $DIR/kernel/core/heap.o $DIR/kernel/core/task.o $DIR/kernel/core/idt.o $DIR/kernel/core/ipc.o $DIR/kernel/core/event_queue.o $DIR/kernel/core/synch.o \
+  $DIR/kernel/arch/x86.o \
   $DIR/kernel/drivers/vga.o $DIR/kernel/drivers/keyboard.o $DIR/kernel/drivers/mouse.o $DIR/kernel/drivers/timer.o $DIR/kernel/drivers/ata.o $DIR/kernel/drivers/fs.o \
   $DIR/kernel/ui/desktop.o $DIR/kernel/ui/window.o $DIR/kernel/ui/shell.o $DIR/kernel/ui/sysmon.o $DIR/kernel/ui/fman.o $DIR/kernel/ui/boot.o $DIR/kernel/ui/editor.o $DIR/kernel/ui/forth.o $DIR/kernel/ui/paint.o $DIR/kernel/ui/lang.o \
   $DIR/kernel/ml/nn.o $DIR/kernel/ml/ai.o $DIR/kernel/ml/model.o $DIR/kernel/ml/aidemo.o \

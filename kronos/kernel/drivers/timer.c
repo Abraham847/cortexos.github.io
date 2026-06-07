@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "task.h"
 
 void timer_init(void) {
     timer_ticks = 0;
@@ -9,6 +10,9 @@ void timer_init(void) {
 }
 
 void timer_sleep(int ticks) {
-    u32 target = timer_ticks + ticks;
-    while (timer_ticks < target) __asm__ volatile("hlt");
+    u32 start = timer_ticks;
+    while ((u32)(timer_ticks - start) < (u32)ticks) {
+        if (task_is_initialized()) task_yield();
+        else __asm__ volatile("hlt");
+    }
 }

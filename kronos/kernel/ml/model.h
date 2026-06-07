@@ -1,7 +1,6 @@
 #ifndef MODEL_H
 #define MODEL_H
 
-#include "kernel.h"
 #include "nn.h"
 
 #define MODEL_MAX 8

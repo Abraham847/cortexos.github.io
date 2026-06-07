@@ -36,24 +36,23 @@ void aidemo_task(void) {
         in[1] = FF((step / 2) % 2);
         nn_infer(shared_net, in, out);
 
-        char msg[IPC_DATA_SZ];
-        int pos = 0;
-        char tmp[16];
-        msg[pos++] = 'X'; msg[pos++] = 'O'; msg[pos++] = 'R'; msg[pos++] = ':';
-        itoa(FI(in[0]), tmp);
-        for (int i = 0; tmp[i] && pos < IPC_DATA_SZ - 1; i++) msg[pos++] = tmp[i];
-        msg[pos++] = '^';
-        itoa(FI(in[1]), tmp);
-        for (int i = 0; tmp[i] && pos < IPC_DATA_SZ - 1; i++) msg[pos++] = tmp[i];
-        msg[pos++] = '=';
-        int ov = FI(out[0] * 100);
-        itoa(ov, tmp);
-        for (int i = 0; tmp[i] && pos < IPC_DATA_SZ - 1; i++) msg[pos++] = tmp[i];
-        msg[pos] = 0;
-
-        ipc_send(0, 2, msg, pos);
-        model_put("demo");
-        shared_net = model_get("demo");
+        if (ipc_available(0) < IPC_MBOX_SZ) {
+            char msg[IPC_DATA_SZ];
+            int pos = 0;
+            char tmp[16];
+            msg[pos++] = 'X'; msg[pos++] = 'O'; msg[pos++] = 'R'; msg[pos++] = ':';
+            itoa(FI(in[0]), tmp);
+            for (int i = 0; tmp[i] && pos < IPC_DATA_SZ - 4; i++) msg[pos++] = tmp[i];
+            msg[pos++] = '^';
+            itoa(FI(in[1]), tmp);
+            for (int i = 0; tmp[i] && pos < IPC_DATA_SZ - 4; i++) msg[pos++] = tmp[i];
+            msg[pos++] = '=';
+            int ov = FI(out[0] * 100);
+            itoa(ov, tmp);
+            for (int i = 0; tmp[i] && pos < IPC_DATA_SZ - 1; i++) msg[pos++] = tmp[i];
+            msg[pos] = 0;
+            ipc_send(0, 2, msg, pos);
+        }
         step++;
         for (int i = 0; i < 50; i++) task_yield();
     }

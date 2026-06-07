@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "event_queue.h"
 
 static int mouse_cycle = 0;
 static u8 mouse_packet[3];
@@ -31,7 +32,6 @@ void mouse_init(void) {
     mouse_write(0xF4); mouse_read();
     mouse_x = vga_width / 2; mouse_y = vga_height / 2;
     mouse_btn = 0;
-    mouse_click_count = 0;
 }
 
 void mouse_handler(void) {
@@ -52,7 +52,10 @@ void mouse_handler(void) {
             if (mouse_y < 0) mouse_y = 0; if (mouse_y >= (int)vga_height) mouse_y = vga_height - 1;
             mouse_btn = mouse_packet[0] & 7;
             if (mouse_btn != prev_btn) {
-                if (mouse_btn & 1) mouse_click_count++;
+                if (mouse_btn & 1) {
+                    event_t e = { .type = EV_MOUSE_CLICK, .mouse_x = mouse_x, .mouse_y = mouse_y, .mouse_btn = mouse_btn };
+                    ev_push(e);
+                }
                 prev_btn = mouse_btn;
             }
             break;

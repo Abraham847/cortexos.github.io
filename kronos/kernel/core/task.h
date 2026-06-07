@@ -1,10 +1,10 @@
 #ifndef TASK_H
 #define TASK_H
 
-#include "kernel.h"
+#include "core.h"
 
 #define MAX_TASKS 8
-#define TASK_STACK_SIZE 1024
+#define TASK_STACK_SIZE 4096
 #define STACK_CANARY 0xDEADC0DE
 
 typedef enum { TASK_FREE = 0, TASK_READY, TASK_RUNNING, TASK_DEAD } task_state_t;
@@ -18,6 +18,7 @@ typedef struct {
     int id;
     task_fn_t func;
     int quantum;
+    u8 fpu_state[512] __attribute__((aligned(16)));
 } task_t;
 
 void task_init(void);
@@ -27,6 +28,6 @@ void task_exit(void);
 int task_count(void);
 int current_task_id(void);
 int task_is_initialized(void);
-extern volatile int atomic_driver;
+void task_schedule(void);
 
 #endif

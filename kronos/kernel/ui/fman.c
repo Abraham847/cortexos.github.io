@@ -1,7 +1,7 @@
 #include "kernel.h"
-#include "ui/fman.h"
-#include "drivers/fs.h"
-#include "ui/lang.h"
+#include "fman.h"
+#include "fs.h"
+#include "lang.h"
 
 static fs_entry_t fman_ents[50];
 static int fman_n;
@@ -35,6 +35,9 @@ void fman_draw(int id) {
         u8 fg = (idx == fman_sel) ? 15 : 7;
         u8 bg = (idx == fman_sel) ? 5 : 1;
         vga_drawstring(bx + 3, y, fman_ents[idx].name, fg, bg);
+        char sb[16];
+        itoa(fman_ents[idx].size, sb);
+        vga_drawstring(bx + 110, y, sb, fg, bg);
         y += 10;
     }
     char buf[8];

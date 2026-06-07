@@ -1,6 +1,8 @@
 #include "model.h"
 #include "heap.h"
 #include "fs.h"
+#include "task.h"
+#include "synch.h"
 
 static model_entry_t registry[MODEL_MAX];
 
@@ -21,8 +23,9 @@ static int find_name(const char *name) {
 }
 
 int model_register(const char *name, nn *net) {
+    mutex_lock(&mutex_model);
     int si = find_slot();
-    if (si < 0) return -1;
+    if (si < 0) { mutex_unlock(&mutex_model); return -1; }
     int j;
     for (j = 0; name[j] && j < MODEL_NAME_MAX - 1; j++)
         registry[si].name[j] = name[j];
@@ -30,6 +33,7 @@ int model_register(const char *name, nn *net) {
     registry[si].net = net;
     registry[si].refs = 1;
     registry[si].used = 1;
+    mutex_unlock(&mutex_model);
     return 0;
 }
 
@@ -43,30 +47,39 @@ int model_load_file(const char *name, const char *path) {
 }
 
 nn* model_get(const char *name) {
+    mutex_lock(&mutex_model);
     int idx = find_name(name);
-    if (idx < 0) return 0;
+    if (idx < 0) { mutex_unlock(&mutex_model); return 0; }
     if (registry[idx].refs < 0x7FFFFFFF) registry[idx].refs++;
-    return registry[idx].net;
+    nn *net = registry[idx].net;
+    mutex_unlock(&mutex_model);
+    return net;
 }
 
 int model_put(const char *name) {
+    mutex_lock(&mutex_model);
     int idx = find_name(name);
-    if (idx < 0) return -1;
+    if (idx < 0) { mutex_unlock(&mutex_model); return -1; }
     if (registry[idx].refs > 0) registry[idx].refs--;
-    return registry[idx].refs;
+    int r = registry[idx].refs;
+    mutex_unlock(&mutex_model);
+    return r;
 }
 
 int model_unregister(const char *name) {
+    mutex_lock(&mutex_model);
     int idx = find_name(name);
-    if (idx < 0) return -1;
-    if (registry[idx].refs > 0) return -1;
+    if (idx < 0) { mutex_unlock(&mutex_model); return -1; }
+    if (registry[idx].refs > 0) { mutex_unlock(&mutex_model); return -1; }
     nn_free(registry[idx].net);
     kfree(registry[idx].net);
     registry[idx].used = 0;
+    mutex_unlock(&mutex_model);
     return 0;
 }
 
 void model_list(char *buf, int max) {
+    mutex_lock(&mutex_model);
     int pos = 0;
     for (int i = 0; i < MODEL_MAX; i++) {
         if (!registry[i].used) continue;
@@ -74,27 +87,36 @@ void model_list(char *buf, int max) {
         int j;
         for (j = 0; registry[i].name[j] && pos < max - 2; j++)
             buf[pos++] = registry[i].name[j];
-        buf[pos++] = ' ';
+        if (pos < max - 1) buf[pos++] = ' ';
         itoa(registry[i].refs, tmp);
         for (j = 0; tmp[j] && pos < max - 2; j++) buf[pos++] = tmp[j];
-        buf[pos++] = ' ';
+        if (pos < max - 1) buf[pos++] = ' ';
     }
     if (max > 0) buf[max - 1] = 0;
     if (pos < max) buf[pos] = 0;
+    mutex_unlock(&mutex_model);
 }
 
 int model_count(void) {
+    mutex_lock(&mutex_model);
     int n = 0;
     for (int i = 0; i < MODEL_MAX; i++) if (registry[i].used) n++;
+    mutex_unlock(&mutex_model);
     return n;
 }
 
 const char *model_name_at(int idx) {
-    if (idx < 0 || idx >= MODEL_MAX || !registry[idx].used) return 0;
-    return registry[idx].name;
+    mutex_lock(&mutex_model);
+    if (idx < 0 || idx >= MODEL_MAX || !registry[idx].used) { mutex_unlock(&mutex_model); return 0; }
+    const char *n = registry[idx].name;
+    mutex_unlock(&mutex_model);
+    return n;
 }
 
 int model_refs_at(int idx) {
-    if (idx < 0 || idx >= MODEL_MAX || !registry[idx].used) return -1;
-    return registry[idx].refs;
+    mutex_lock(&mutex_model);
+    if (idx < 0 || idx >= MODEL_MAX || !registry[idx].used) { mutex_unlock(&mutex_model); return -1; }
+    int r = registry[idx].refs;
+    mutex_unlock(&mutex_model);
+    return r;
 }

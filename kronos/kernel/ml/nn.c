@@ -1,7 +1,7 @@
 #include "nn.h"
 #include "heap.h"
-#include "ata.h"
 #include "fs.h"
+#include "kpu.h"
 
 fp fpd(fp a, fp b) {
     if (b == 0) return 0;
@@ -56,6 +56,20 @@ static void mat_free(mat *m) {
 }
 
 static void mat_mul(mat *c, mat *a, mat *b) {
+    if (kpu_available()) {
+        int r = a->r, k2 = a->c, c2 = b->c;
+        int nf = r * k2 + k2 * c2 + r * c2;
+        float *fb = (float*)kmalloc(nf * sizeof(float));
+        if (fb) {
+            float *fa = fb, *fb2 = fa + r * k2, *fc = fb2 + k2 * c2;
+            for (int i = 0; i < r * k2; i++) fa[i] = a->d[i] / 65536.0f;
+            for (int i = 0; i < k2 * c2; i++) fb2[i] = b->d[i] / 65536.0f;
+            kpu_mat_mul_float(fc, fa, fb2, r, k2, c2);
+            for (int i = 0; i < r * c2; i++) c->d[i] = (int)(fc[i] * 65536.0f);
+            kfree(fb);
+            return;
+        }
+    }
     for (int i = 0; i < a->r; i++)
         for (int j = 0; j < b->c; j++) {
             fp sum = 0;
@@ -66,6 +80,19 @@ static void mat_mul(mat *c, mat *a, mat *b) {
 }
 
 static void mat_add(mat *a, mat *b) {
+    if (kpu_available()) {
+        int n = a->r * a->c;
+        float *fa = (float*)kmalloc(n * 2 * sizeof(float));
+        if (fa) {
+            float *fb = fa + n;
+            for (int i = 0; i < n; i++) fa[i] = a->d[i] / 65536.0f;
+            for (int i = 0; i < n; i++) fb[i] = b->d[i] / 65536.0f;
+            kpu_mat_add_float(fa, fb, n);
+            for (int i = 0; i < n; i++) a->d[i] = (int)(fa[i] * 65536.0f);
+            kfree(fa);
+            return;
+        }
+    }
     for (int i = 0; i < a->r * a->c; i++) a->d[i] += b->d[i];
 }
 
@@ -78,15 +105,55 @@ static void mat_sub(mat *a, mat *b) {
 }
 
 static void mat_sigmoid(mat *m) {
+    if (kpu_available()) {
+        int n = m->r * m->c;
+        float *fb = (float*)kmalloc(n * sizeof(float));
+        if (fb) {
+            for (int i = 0; i < n; i++) fb[i] = m->d[i] / 65536.0f;
+            kpu_sigmoid_float(fb, n);
+            for (int i = 0; i < n; i++) m->d[i] = (int)(fb[i] * 65536.0f);
+            kfree(fb);
+            return;
+        }
+    }
     for (int i = 0; i < m->r * m->c; i++) m->d[i] = sigmoid(m->d[i]);
 }
 
+static void mat_leaky_relu(mat *m) {
+    for (int i = 0; i < m->r * m->c; i++)
+        m->d[i] = m->d[i] >= 0 ? m->d[i] : fpm(m->d[i], FF(0.01));
+}
+
 static void mat_relu(mat *m) {
+    if (kpu_available()) {
+        int n = m->r * m->c;
+        float *fb = (float*)kmalloc(n * sizeof(float));
+        if (fb) {
+            for (int i = 0; i < n; i++) fb[i] = m->d[i] / 65536.0f;
+            kpu_relu_float(fb, n);
+            for (int i = 0; i < n; i++) m->d[i] = (int)(fb[i] * 65536.0f);
+            kfree(fb);
+            return;
+        }
+    }
     for (int i = 0; i < m->r * m->c; i++)
         if (m->d[i] < 0) m->d[i] = 0;
 }
 
 static void mat_tanh(mat *m) {
+    if (kpu_available()) {
+        int n = m->r * m->c;
+        float *fb = (float*)kmalloc(n * sizeof(float));
+        if (fb) {
+            for (int i = 0; i < n; i++) fb[i] = m->d[i] / 65536.0f;
+            for (int i = 0; i < n; i++) fb[i] = fb[i] * 2.0f;
+            kpu_sigmoid_float(fb, n);
+            for (int i = 0; i < n; i++) fb[i] = fb[i] * 2.0f - 1.0f;
+            for (int i = 0; i < n; i++) m->d[i] = (int)(fb[i] * 65536.0f);
+            kfree(fb);
+            return;
+        }
+    }
     for (int i = 0; i < m->r * m->c; i++)
         m->d[i] = tanh_fp(m->d[i]);
 }
@@ -96,6 +163,22 @@ static void mat_scale(mat *m, fp s) {
 }
 
 static void mat_mul_t(mat *c, mat *a, mat *b) {
+    if (kpu_available()) {
+        int r = a->r, k2 = a->c, c2 = b->r;
+        int nf = r * k2 + k2 * c2 + r * c2;
+        float *fb = (float*)kmalloc(nf * sizeof(float));
+        if (fb) {
+            float *fa = fb, *fw = fa + r * k2, *fc = fw + k2 * c2;
+            for (int i = 0; i < r * k2; i++) fa[i] = a->d[i] / 65536.0f;
+            for (int j = 0; j < c2; j++)
+                for (int k = 0; k < k2; k++)
+                    fw[k * c2 + j] = b->d[j * k2 + k] / 65536.0f;
+            kpu_mat_mul_float(fc, fa, fw, r, k2, c2);
+            for (int i = 0; i < r * c2; i++) c->d[i] = (int)(fc[i] * 65536.0f);
+            kfree(fb);
+            return;
+        }
+    }
     for (int i = 0; i < a->r; i++)
         for (int j = 0; j < b->r; j++) {
             fp sum = 0;
@@ -107,23 +190,26 @@ static void mat_mul_t(mat *c, mat *a, mat *b) {
 
 static fp apply_act(fp x, nn_act_t act) {
     switch (act) {
-        case ACT_RELU: return x < 0 ? 0 : x;
-        case ACT_TANH: return tanh_fp(x);
-        default:       return sigmoid(x);
+        case ACT_RELU:       return x < 0 ? 0 : x;
+        case ACT_LEAKY_RELU: return x < 0 ? fpm(x, FF(0.01)) : x;
+        case ACT_TANH:       return tanh_fp(x);
+        default:             return sigmoid(x);
     }
 }
 
 static void mat_apply_act(mat *m, nn_act_t act) {
-    if (act == ACT_SIGMOID) { mat_sigmoid(m); return; }
-    if (act == ACT_RELU)    { mat_relu(m);    return; }
-    if (act == ACT_TANH)    { mat_tanh(m);    return; }
+    if (act == ACT_SIGMOID)    { mat_sigmoid(m);    return; }
+    if (act == ACT_RELU)       { mat_relu(m);       return; }
+    if (act == ACT_TANH)       { mat_tanh(m);       return; }
+    if (act == ACT_LEAKY_RELU) { mat_leaky_relu(m); return; }
 }
 
 static fp act_deriv(fp a_val, nn_act_t act) {
     switch (act) {
-        case ACT_RELU: return a_val > 0 ? F1 : 0;
-        case ACT_TANH: return F1 - fpm(a_val, a_val);
-        default:       return fpm(a_val, F1 - a_val);
+        case ACT_RELU:       return a_val > 0 ? F1 : 0;
+        case ACT_LEAKY_RELU: return a_val > 0 ? F1 : FF(0.01);
+        case ACT_TANH:       return F1 - fpm(a_val, a_val);
+        default:             return fpm(a_val, F1 - a_val);
     }
 }
 
@@ -131,6 +217,10 @@ int nn_init(nn *n, int nl, int *sz) {
     if (nl <= 0 || nl > NN_MAX_L) return -1;
     n->nl = nl;
     n->init = 0;
+    for (int i = 0; i < NN_MAX_L; i++) {
+        n->z[i].d = 0; n->a[i].d = 0; n->e[i].d = 0;
+        n->w[i].d = 0; n->b[i].d = 0; n->dw[i].d = 0; n->db[i].d = 0;
+    }
     for (int i = 0; i < nl; i++) {
         n->sz[i] = sz[i];
         n->acts[i] = ACT_SIGMOID;
@@ -203,11 +293,34 @@ fp nn_bwd(nn *n, fp *targ, fp lr) {
         mat_mul_t(&n->dw[l - 1], &n->e[l], &n->a[l - 1]);
         for (int i = 0; i < n->sz[l]; i++) n->db[l - 1].d[i] = n->e[l].d[i];
         if (l > 1) {
-            for (int i = 0; i < n->sz[l - 1]; i++) {
-                fp sum = 0;
-                for (int j = 0; j < n->sz[l]; j++)
-                    sum += fpm(n->w[l - 1].d[j * n->w[l - 1].c + i], n->e[l].d[j]);
-                n->e[l - 1].d[i] = sum;
+            int prev = n->sz[l - 1], cur = n->sz[l];
+            if (kpu_available()) {
+                int nf = cur + cur * prev + prev;
+                float *fb = (float*)kmalloc(nf * sizeof(float));
+                if (fb) {
+                    float *fe = fb, *fw = fe + cur, *fc = fw + cur * prev;
+                    for (int j = 0; j < cur; j++) fe[j] = n->e[l].d[j] / 65536.0f;
+                    for (int j = 0; j < cur; j++)
+                        for (int i = 0; i < prev; i++)
+                            fw[j * prev + i] = n->w[l - 1].d[j * prev + i] / 65536.0f;
+                    kpu_mat_mul_float(fc, fe, fw, 1, cur, prev);
+                    for (int i = 0; i < prev; i++) n->e[l - 1].d[i] = (int)(fc[i] * 65536.0f);
+                    kfree(fb);
+                } else {
+                    for (int i = 0; i < prev; i++) {
+                        fp sum = 0;
+                        for (int j = 0; j < cur; j++)
+                            sum += fpm(n->w[l - 1].d[j * prev + i], n->e[l].d[j]);
+                        n->e[l - 1].d[i] = sum;
+                    }
+                }
+            } else {
+                for (int i = 0; i < prev; i++) {
+                    fp sum = 0;
+                    for (int j = 0; j < cur; j++)
+                        sum += fpm(n->w[l - 1].d[j * prev + i], n->e[l].d[j]);
+                    n->e[l - 1].d[i] = sum;
+                }
             }
         }
     }
@@ -220,87 +333,7 @@ fp nn_bwd(nn *n, fp *targ, fp lr) {
     return loss;
 }
 
-int nn_save(nn *n, unsigned sector) {
-    unsigned char buf[512];
-    unsigned char *p = buf;
-
-    *((int *)p) = n->nl; p += 4;
-    for (int i = 0; i < n->nl; i++) {
-        *((int *)p) = n->sz[i]; p += 4;
-    }
-    for (int i = 0; i < n->nl; i++) {
-        *((int *)p) = (int)n->acts[i]; p += 4;
-    }
-
-    for (int l = 0; l < n->nl - 1; l++) {
-        int nw = n->w[l].r * n->w[l].c;
-        for (int i = 0; i < nw; i++) {
-            if ((p - buf) + 4 > 512) {
-                if (ata_write(sector++, 1, buf)) return -1;
-                p = buf;
-            }
-            *((int *)p) = n->w[l].d[i]; p += 4;
-        }
-    }
-    for (int l = 0; l < n->nl - 1; l++) {
-        for (int i = 0; i < n->b[l].r; i++) {
-            if ((p - buf) + 4 > 512) {
-                if (ata_write(sector++, 1, buf)) return -1;
-                p = buf;
-            }
-            *((int *)p) = n->b[l].d[i]; p += 4;
-        }
-    }
-    if (p > buf) {
-        int pad = p - buf;
-        while (pad < 512) { buf[pad] = 0; pad++; }
-        if (ata_write(sector, 1, buf)) return -1;
-    }
-    return 0;
-}
-
-int nn_load(nn *n, unsigned sector) {
-    unsigned char buf[512];
-    if (ata_read(sector++, 1, buf)) return -1;
-    unsigned char *p = buf;
-
-    int nl = *((int *)p); p += 4;
-    int sz[NN_MAX_L];
-    if (nl <= 0 || nl > NN_MAX_L) return -1;
-    for (int i = 0; i < nl; i++) {
-        sz[i] = *((int *)p); p += 4;
-    }
-
-    if (nn_init(n, nl, sz)) return -1;
-
-    for (int i = 0; i < nl; i++) {
-        int av = *((int *)p); p += 4;
-        if (av < 0 || av > 2) av = 0;
-        n->acts[i] = (nn_act_t)av;
-    }
-
-    for (int l = 0; l < n->nl - 1; l++) {
-        int nw = n->w[l].r * n->w[l].c;
-        for (int i = 0; i < nw; i++) {
-            if ((p - buf) + 4 > 512) {
-                if (ata_read(sector++, 1, buf)) { nn_free(n); return -1; }
-                p = buf;
-            }
-            n->w[l].d[i] = *((int *)p); p += 4;
-        }
-    }
-    for (int l = 0; l < n->nl - 1; l++) {
-        for (int i = 0; i < n->b[l].r; i++) {
-            if ((p - buf) + 4 > 512) {
-                if (ata_read(sector++, 1, buf)) { nn_free(n); return -1; }
-                p = buf;
-            }
-            n->b[l].d[i] = *((int *)p); p += 4;
-        }
-    }
-    return 0;
-}
-
+/* nn_save/nn_load (raw ATA) removed — use nn_save_file/nn_load_file via fs_write/fs_read */
 int nn_save_file(nn *n, const char *path) {
     int hdr = 4 + n->nl * 4 + n->nl * 4;
     int wtotal = 0, btotal = 0;
@@ -411,11 +444,59 @@ int nn_export_txt(nn *n, char *buf, int max) {
     return pos;
 }
 
+int nn_export_csv_file(nn *n, const char *path) {
+    int size = 512 + (n->nl - 1) * (n->sz[0] * n->sz[1] + n->sz[1] * n->sz[2]) * 12;
+    char *buf = (char*)kmalloc(size);
+    if (!buf) return -1;
+    int pos = 0;
+
+    pos += itoa_write(n->nl, buf + pos, size - pos);
+    if (pos < size - 2) buf[pos++] = '\n';
+
+    for (int i = 0; i < n->nl; i++) {
+        if (i > 0 && pos < size - 2) buf[pos++] = ',';
+        pos += itoa_write(n->sz[i], buf + pos, size - pos);
+    }
+    if (pos < size - 2) buf[pos++] = '\n';
+
+    for (int i = 0; i < n->nl; i++) {
+        if (i > 0 && pos < size - 2) buf[pos++] = ',';
+        const char *an = nn_act_name(n->acts[i]);
+        while (*an && pos < size - 2) buf[pos++] = *an++;
+    }
+    if (pos < size - 2) buf[pos++] = '\n';
+
+    for (int l = 0; l < n->nl - 1; l++) {
+        if (pos < size - 6) { buf[pos++] = 'w'; buf[pos++] = '0' + l; }
+        int nw = n->w[l].r * n->w[l].c;
+        for (int i = 0; i < nw; i++) {
+            if (pos < size - 2) buf[pos++] = ',';
+            pos += itoa_write(n->w[l].d[i], buf + pos, size - pos);
+        }
+        if (pos < size - 2) buf[pos++] = '\n';
+    }
+
+    for (int l = 0; l < n->nl - 1; l++) {
+        if (pos < size - 6) { buf[pos++] = 'b'; buf[pos++] = '0' + l; }
+        for (int i = 0; i < n->b[l].r; i++) {
+            if (i > 0 && pos < size - 2) buf[pos++] = ',';
+            pos += itoa_write(n->b[l].d[i], buf + pos, size - pos);
+        }
+        if (pos < size - 2) buf[pos++] = '\n';
+    }
+
+    if (pos >= size) pos = size - 1;
+    int r = fs_write(path, (u8*)buf, pos);
+    kfree(buf);
+    return r == pos ? 0 : -1;
+}
+
 const char *nn_act_name(nn_act_t act) {
     switch (act) {
-        case ACT_RELU: return "relu";
-        case ACT_TANH: return "tanh";
-        default:       return "sigmoid";
+        case ACT_RELU:       return "relu";
+        case ACT_TANH:       return "tanh";
+        case ACT_LEAKY_RELU: return "lrelu";
+        default:             return "sigmoid";
     }
 }
 
@@ -452,7 +533,7 @@ int ds_load(dataset *ds, const char *path) {
     p = big + 12;
     ds->in = (fp*)kmalloc(ds->n * ds->ni * sizeof(fp));
     ds->out = (fp*)kmalloc(ds->n * ds->no * sizeof(fp));
-    if (!ds->in || !ds->out) { kfree(ds->in); kfree(ds->out); kfree(big); return -1; }
+    if (!ds->in || !ds->out) { kfree(ds->in); kfree(ds->out); ds->in = 0; ds->out = 0; kfree(big); return -1; }
     for (int i = 0; i < ds->n; i++) {
         for (int j = 0; j < ds->ni; j++) { ds->in[i * ds->ni + j] = *(int*)p; p += 4; }
         for (int j = 0; j < ds->no; j++) { ds->out[i * ds->no + j] = *(int*)p; p += 4; }
@@ -517,6 +598,7 @@ int ds_import_text(dataset *ds, const char *path, int ni, int no) {
     if (nread > 0 && buf[nread - 1] != '\n') lines++;
 
     ds->n = lines; ds->ni = ni; ds->no = no;
+    if ((long long)lines * ni > 32768 / (int)sizeof(fp) || (long long)lines * no > 32768 / (int)sizeof(fp)) { kfree(buf); return -1; }
     ds->in = (fp*)kmalloc(lines * ni * sizeof(fp));
     ds->out = (fp*)kmalloc(lines * no * sizeof(fp));
     if (!ds->in || !ds->out) { kfree(ds->in); kfree(ds->out); kfree(buf); return -1; }
@@ -531,7 +613,11 @@ int ds_import_text(dataset *ds, const char *path, int ni, int no) {
             if ((*p < '0' || *p > '9') && *p != '-') { p++; continue; }
             int val = 0, neg = 0;
             if (*p == '-') { neg = 1; p++; }
-            while (*p >= '0' && *p <= '9') val = val * 10 + (*p++ - '0');
+            while (*p >= '0' && *p <= '9') {
+                int d = *p++ - '0';
+                if (val > 214748364) { val = 2147483647; while (*p >= '0' && *p <= '9') p++; break; }
+                val = val * 10 + d;
+            }
             vals[nv++] = neg ? -val : val;
         }
         if (*p == '\n') p++;

@@ -9,7 +9,7 @@ SECTIONS
     .text  : { *(.text) }
     .data  : { *(.data) *(.rodata) }
 
-    .bss ALIGN(4) :
+    .bss ALIGN(16) :
     {
         __bss_start = .;
         *(.bss) *(COMMON)

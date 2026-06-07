@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Kronos OS - Download</title>
+<title>CortexOS v2.5 - AI-Enhanced x86 OS</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -11,14 +11,15 @@
 <div class="container">
   <header>
     <div class="logo">
-      <h1>KRONOS <span class="v">v0.2</span></h1>
-      <p class="subtitle">32-bit Protected Mode OS &mdash; FAT12 &bull; x86 &bull; Event-driven &bull; Multitasking</p>
+      <h1>CORTEXOS <span class="v">v2.5</span></h1>
+      <p class="subtitle">32-bit Protected Mode OS &mdash; FPU Neural Net &bull; TCP/IP &bull; VESA &bull; Audio &bull; Apps</p>
     </div>
     <div class="badge-row">
-      <span class="badge">QEMU</span>
-      <span class="badge">VirtualBox</span>
-      <span class="badge">Floppy</span>
-      <span class="badge">FAT12</span>
+      <span class="badge">FPU Neural Net</span>
+      <span class="badge">TCP/IP</span>
+      <span class="badge">VESA</span>
+      <span class="badge">SB16 Audio</span>
+      <span class="badge">User Apps</span>
     </div>
   </header>
 
@@ -35,9 +36,9 @@
       <div class="card">
         <div class="card-icon">vdi</div>
         <h3>VirtualBox VDI</h3>
-        <p class="card-size">~2 MB</p>
-        <p class="card-desc">Pre-converted VirtualBox disk image. Attach as floppy or IDE slave.</p>
-        <a href="cortexos.vdi" class="btn" download>Download .vdi</a>
+        <p class="card-size">~1 MB</p>
+        <p class="card-desc">Pre-converted VirtualBox disk image. Attach as floppy controller. Windows users can run <code>setup-vbox.bat</code> to auto-configure.</p>
+        <a href="cortexos.vdi" class="btn btn-primary" download>Download .vdi</a>
       </div>
       <div class="card">
         <div class="card-icon">zip</div>
@@ -48,8 +49,9 @@
       </div>
     </div>
     <div class="tip" style="margin-top:16px">
-      <strong>Note:</strong> These files are build artifacts. Run <code>bash website/prepare_release.sh</code>
-      after <code>bash build_full.sh</code> to generate them. Or build from source using the GitHub repo.
+      <strong>Note:</strong> These files are build artifacts. Run <code>build.bat</code> (Windows) or
+      <code>bash build_full.sh</code> (Linux) to rebuild, then <code>python website/img2vdi.py cortexos.img website/cortexos.vdi</code>
+      to regenerate the VDI. Or download from the GitHub releases page.
     </div>
   </section>
 
@@ -65,11 +67,11 @@
 
       <div class="tab-content" id="tab-qemu-c">
         <h3>QEMU (Linux / Windows / macOS)</h3>
-        <pre class="code-block"><span class="prompt">$</span> qemu-system-i386 -fda cortexos.img -m 64</pre>
-        <p>Or with debug output to serial console:</p>
-        <pre class="code-block"><span class="prompt">$</span> qemu-system-i386 -fda cortexos.img -m 64 -serial stdio</pre>
+        <pre class="code-block"><span class="prompt">$</span> qemu-system-i386 -drive file=cortexos.img -drive file=hdd.img -netdev user,id=net0 -device rtl8139,netdev=net0 -vga std -m 128 -audiodev sdl,id=audio0 -soundhw sb16</pre>
+        <p>Minimal (no audio, no network):</p>
+        <pre class="code-block"><span class="prompt">$</span> qemu-system-i386 -drive file=cortexos.img -m 64</pre>
         <div class="tip">
-          <strong>Tip:</strong> QEMU's BIOS supports INT 13h extensions natively &mdash; the bootloader uses LBA by default.
+          <strong>Tip:</strong> 128 MB RAM recommended for NN training. Network requires <code>-netdev user -device rtl8139</code>.
         </div>
       </div>
 
@@ -108,129 +110,141 @@
     <h2>Features</h2>
     <div class="feature-grid">
       <div class="feature">
-        <span class="feature-icon">T</span>
-        <div><strong>Terminal</strong> with command history, calculator, file management, and IPC messaging.</div>
-      </div>
-      <div class="feature">
-        <span class="feature-icon">E</span>
-        <div><strong>Text Editor</strong> &mdash; full-screen editor with save/load (Ctrl+S, Ctrl+O, Ctrl+Q).</div>
-      </div>
-      <div class="feature">
-        <span class="feature-icon">P</span>
-        <div><strong>Paint</strong> &mdash; simple drawing app with 15 colors and variable brush size.</div>
-      </div>
-      <div class="feature">
-        <span class="feature-icon">F</span>
-        <div><strong>FORTH Interpreter</strong> &mdash; stack-based REPL with arithmetic and stack ops.</div>
-      </div>
-      <div class="feature">
         <span class="feature-icon">N</span>
-        <div><strong>Neural Network</strong> &mdash; create, train, save, and run inference on multi-layer perceptrons.</div>
+        <div><strong>Dual Neural Network Engine</strong> &mdash; Fixed-point (16.16) for compatibility <em>and</em> native float (FPU-accelerated) for precision. KPU (Kronos Processing Unit) enables hardware FPU matmul, sigmoid, ReLU. Create and train NNs via GUI Creator with Float/Fixed toggle.</div>
       </div>
       <div class="feature">
-        <span class="feature-icon">D</span>
-        <div><strong>Dataset Manager</strong> &mdash; build and manage training datasets with import/export.</div>
+        <span class="feature-icon">T</span>
+        <div><strong>TCP/IP Stack</strong> &mdash; Ethernet, ARP, IP, ICMP (ping), TCP (connect/send/recv/close), DNS resolution, DHCP client. RTL8139 NIC driver with PCI bus scan.</div>
       </div>
       <div class="feature">
-        <span class="feature-icon">I</span>
-        <div><strong>IPC</strong> &mdash; inter-process communication between running tasks.</div>
+        <span class="feature-icon">V</span>
+        <div><strong>VESA Framebuffer</strong> &mdash; 1024&times;768 256-color mode with linear framebuffer mapping above 1MB. Window manager with taskbar, clock, and icon desktop.</div>
       </div>
       <div class="feature">
-        <span class="feature-icon">L</span>
-        <div><strong>Multi-language UI</strong> &mdash; switch between EN, ES, FR, DE, PT with <code>LANG</code> command.</div>
-      </div>
-      <div class="feature">
-        <span class="feature-icon">a</span>
-        <div><strong>Lowercase + Accents</strong> &mdash; full a-z font support, dead-key accents (<code>'</code>+vowel = <code>&aacute;&eacute;&iacute;&oacute;&uacute;&ntilde;&uuml;</code>).</div>
-      </div>
-      <div class="feature">
-        <span class="feature-icon">M</span>
-        <div><strong>System Monitor</strong> &mdash; real-time CPU task info, memory stats, and uptime display.</div>
-      </div>
-      <div class="feature">
-        <span class="feature-icon">F</span>
-        <div><strong>File Manager</strong> &mdash; browse, open, and delete files from the desktop.</div>
+        <span class="feature-icon">A</span>
+        <div><strong>SB16 Audio</strong> &mdash; Sound Blaster 16 DSP driver with DMA. <code>SOUND PLAY freq ms</code> and <code>SOUND VOL</code> commands.</div>
       </div>
       <div class="feature">
         <span class="feature-icon">U</span>
-        <div><strong>User Accounts</strong> &mdash; multi-user login with <code>USER</code>, <code>LOGIN</code>, <code>LOGOUT</code>, <code>UNLOCK</code>.</div>
+        <div><strong>User Apps</strong> &mdash; Flat binary format (.BIN) with checksum verification. Apps loaded at 0x50000, linked against kernel API. <code>RUN app.BIN</code> command.</div>
       </div>
       <div class="feature">
-        <span class="feature-icon">C</span>
-        <div><strong>User Commands</strong> &mdash; define custom shell commands with <code>UCMD</code> saved to disk.</div>
+        <span class="feature-icon">S</span>
+        <div><strong>Shell + Scripting</strong> &mdash; 35+ commands, command history, user-defined commands, FORTH interpreter, <code>EXEC file.txt</code> batch execution.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">F</span>
+        <div><strong>File Systems</strong> &mdash; FAT12/FAT32 auto-detect, procfs, devfs, tmpfs. Multi-disk support (ATA master/slave). File manager with size display.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">I</span>
+        <div><strong>AI Studio Suite</strong> &mdash; 5-panel IDE for data, model, training, inference, export. AI Lab launcher, AI Creator wizard with presets (XOR, AND, OR) and custom architectures. NN Viewer exports trained weights as CSV (<kbd>S</kbd>) &mdash; readable from Windows.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">H</span>
+        <div><strong>Hardware Support</strong> &mdash; PCI bus scan, RTC (CMOS clock), ATA PIO (master/slave), PS/2 keyboard + mouse, timer (100Hz). 192KB heap for datasets.</div>
+      </div>
+      <div class="feature">
+        <span class="feature-icon">D</span>
+        <div><strong>Desktop GUI</strong> &mdash; Window manager (drag, focus, close), 8-icon launcher, taskbar with clock, system monitor, file manager, text editor, paint app.</div>
       </div>
     </div>
   </section>
 
   <section class="section" id="commands">
-    <h2>Shell Commands</h2>
+    <h2>Shell Commands (35+)</h2>
     <div class="cmd-table-wrap">
       <table class="cmd-table">
-        <tr><td>HELP</td><td>Show this help</td></tr>
-        <tr><td>CALC a+b</td><td>Basic arithmetic</td></tr>
-        <tr><td>INFO</td><td>System information</td></tr>
-        <tr><td>CLEAR</td><td>Clear terminal output</td></tr>
-        <tr><td>DIR</td><td>List files on disk (cached in RAM)</td></tr>
-        <tr><td>DEL file</td><td>Delete a file</td></tr>
-        <tr><td>REN old new</td><td>Rename a file</td></tr>
-        <tr><td>EDIT file</td><td>Open text editor</td></tr>
-        <tr><td>FORTH</td><td>Start FORTH interpreter</td></tr>
-        <tr><td>PAINT</td><td>Open drawing app</td></tr>
-        <tr><td>MONITOR</td><td>Open system monitor</td></tr>
-        <tr><td>FMAN [path]</td><td>Open file manager</td></tr>
-        <tr><td>NEURAL</td><td>NN training monitor</td></tr>
-        <tr><td>NN ...</td><td>Neural network commands</td></tr>
-        <tr><td>DS ...</td><td>Dataset manager</td></tr>
-        <tr><td>MSG SEND/RECV</td><td>IPC messaging</td></tr>
-        <tr><td>MODEL ...</td><td>Model registry</td></tr>
+        <tr><td>HELP</td><td>Show help</td></tr>
+        <tr><td>CALC</td><td>Arithmetic (a+b / a-b / a*b)</td></tr>
+        <tr><td>INFO</td><td>System info</td></tr>
+        <tr><td>CLEAR</td><td>Clear terminal</td></tr>
+        <tr><td>MEM</td><td>Heap &amp; RAM stats</td></tr>
+        <tr><td>DIR</td><td>List files</td></tr>
+        <tr><td>DEL</td><td>Delete file</td></tr>
+        <tr><td>REN</td><td>Rename file</td></tr>
+        <tr><td>CAT</td><td>Print file contents</td></tr>
+        <tr><td>EDIT</td><td>Text editor</td></tr>
+        <tr><td>RUN &lt;file.BIN&gt;</td><td>Execute user app</td></tr>
+        <tr><td>EXEC &lt;file.txt&gt;</td><td>Run batch script</td></tr>
+        <tr><td>FORTH</td><td>FORTH interpreter</td></tr>
+        <tr><td>PAINT</td><td>Drawing app</td></tr>
+        <tr><td>DATE</td><td>RTC date/time</td></tr>
+        <tr><td>BEEP</td><td>PC speaker beep</td></tr>
+        <tr><td>SOUND PLAY/VOL</td><td>SB16 audio playback</td></tr>
+        <tr><td>NET</td><td>Network info / DHCP / TCP test</td></tr>
+        <tr><td>PING &lt;ip&gt;</td><td>ICMP echo</td></tr>
+        <tr><td>NNF</td><td>Float NN (CREATE/TRAIN/INFER/DEMO/GEN)</td></tr>
+        <tr><td>NN</td><td>Fixed NN (CREATE/TRAIN/LOAD/SAVE/INFER)</td></tr>
+        <tr><td>DS</td><td>Dataset manager (GEN/CREATE/ADD/SAVE)</td></tr>
+        <tr><td>MODEL</td><td>Model registry (REG/LOAD/GET/PUT)</td></tr>
+        <tr><td>MSG</td><td>IPC SEND/RECV</td></tr>
+        <tr><td>SYSMON</td><td>System monitor</td></tr>
+        <tr><td>FMAN</td><td>File manager (with file sizes)</td></tr>
+        <tr><td>CMD</td><td>User command manager</td></tr>
         <tr><td>PS</td><td>List tasks</td></tr>
-        <tr><td>LANG ES</td><td>Switch language (EN/ES/FR/DE/PT)</td></tr>
-        <tr><td>USER name</td><td>Create a user account</td></tr>
-        <tr><td>LOGIN name</td><td>Login as a user</td></tr>
-        <tr><td>LOGOUT</td><td>Logout current user</td></tr>
-        <tr><td>UNLOCK pass</td><td>Unlock locked session</td></tr>
-        <tr><td>UCMD ADD name action</td><td>Add custom shell command</td></tr>
-        <tr><td>UCMD DEL name</td><td>Delete custom command</td></tr>
-        <tr><td>UCMD SAVE/LOAD</td><td>Persist/restore custom commands</td></tr>
+        <tr><td>LANG</td><td>Switch language (EN/ES/FR/DE/PT)</td></tr>
       </table>
     </div>
   </section>
 
   <section class="section" id="changelog">
-    <h2>v0.2 Changelog</h2>
+    <h2>v2.5 What's New</h2>
     <div class="cmd-table-wrap">
       <table class="cmd-table">
-        <tr><td>Event-driven architecture</td><td>ISRs push events to lock-free queue; main loop pops and dispatches. No more UI calls from interrupt context.</td></tr>
-        <tr><td>Stack canary</td><td>0xDEADC0DE guard words at both ends of every task stack, verified on task switch.</td></tr>
-        <tr><td>Keyboard ISR min&iacute;ma</td><td>IRQ33 only pushes raw scancode; decoding (shift, ctrl, accents) moved to <code>kb_process()</code>.</td></tr>
-        <tr><td>FS directory cache</td><td>Root directory cached in RAM (224 entries). <code>DIR</code> and file lookups scan memory, not disk.</td></tr>
-        <tr><td>FAT lazy sync</td><td><code>fat_dirty</code> flag avoids redundant disk writes when FAT hasn&rsquo;t changed.</td></tr>
-        <tr><td>Z-order windows</td><td>Separate z-order array decouples visual stacking from window array index.</td></tr>
-        <tr><td>HLT optimization</td><td>Main loop halts CPU when only idle task runs (no busy-wait in scheduler).</td></tr>
-        <tr><td>Password on disk</td><td>System password read from <code>PASS.SYS</code> instead of hardcoded string.</td></tr>
-        <tr><td>Dynamic shell output</td><td>Terminal buffer expanded to 32&times;48; scrolls dynamically based on window height.</td></tr>
-        <tr><td>Dirty flags</td><td>Desktop, windows, system monitor, and file manager skip redraw when nothing changed.</td></tr>
-        <tr><td>Atomic mouse reads</td><td><code>cli/sti</code> guards around mouse position reads in click/drag handlers.</td></tr>
-        <tr><td>Source reorganization</td><td>Files organized into <code>core/</code>, <code>drivers/</code>, <code>ui/</code>, <code>ml/</code>, <code>apps/</code> subdirectories.</td></tr>
+        <tr><td class="h">Neural Network</td><td></td></tr>
+        <tr><td>nn_float (FPU native)</td><td>New module with float weights, FPU-accelerated forward/backward, sigmoid/ReLU via KPU. Full precision (no fixed-point quantization).</td></tr>
+        <tr><td>KPU acceleration</td><td>5 ops accelerated: mat_mul, mat_add, mat_sigmoid, mat_relu, mat_mul_t + backprop error propagation. Falls back to fixed-point when FPU unavailable.</td></tr>
+        <tr><td>AI Creator v2</td><td>Float/Fixed toggle, activation applies to ALL layers (bug fix), auto-save to AIMODEL.BIN, bigger window, better preview.</td></tr>
+        <tr><td>NNF command</td><td>CREATE/TRAIN/INFER/SAVE/LOAD/GEN/DEMO. <code>NNF DEMO</code> trains XOR 2-4-1 in 200 epochs with float precision.</td></tr>
+        <tr><td>DS GEN</td><td><code>DS GEN XOR|AND|OR</code> generates synthetic datasets instantly.</td></tr>
+        <tr><td class="h">Networking</td><td></td></tr>
+        <tr><td>TCP/IP stack</td><td>Ethernet, ARP, IP, ICMP (ping), TCP, DNS, DHCP client. RTL8139 NIC driver.</td></tr>
+        <tr><td class="h">Hardware</td><td></td></tr>
+        <tr><td>SB16 Audio</td><td>Sound Blaster 16 DSP driver with DMA. Play tones at any frequency/duration.</td></tr>
+        <tr><td>VESA 1024x768</td><td>Linear framebuffer mapped above 1MB. Automatic mode fallback.</td></tr>
+        <tr><td>FPU enable</td><td>CR0/CR4 configured, fninit at boot. All float ops use hardware FPU.</td></tr>
+        <tr><td>RTC clock</td><td>CMOS real-time clock driver. Desktop shows HH:MM:SS + date.</td></tr>
+        <tr><td>Heap 128KB</td><td>Dedicated heap (0x70000&ndash;0x8FFFF) with stack at 1MB, no collision.</td></tr>
+        <tr><td>ATA slave</td><td>Second ATA drive support. <code>ata_select(1)</code> for FAT32 on slave.</td></tr>
+        <tr><td>PCI scan</td><td>Bus scan via 0xCF8/0xCFC config space.</td></tr>
+        <tr><td class="h">User Experience</td><td></td></tr>
+        <tr><td>Desktop clock</td><td>RTC date/time in taskbar, updates every second.</td></tr>
+        <tr><td>FMAN file sizes</td><td>File manager now shows byte sizes for each file.</td></tr>
+        <tr><td>MEM command</td><td>Heap usage, free space, total RAM.</td></tr>
+        <tr><td>RUN command</td><td>Execute .BIN user-space apps from disk.</td></tr>
+        <tr><td>EXEC command</td><td>Batch scripting: <code>EXEC script.txt</code> executes commands line by line.</td></tr>
+        <tr><td>NN Viewer export</td><td>Press <kbd>S</kbd> in NN Viewer to save XOR weights as CSV (<code>NNVIEW.CSV</code>). Open from Windows to reuse in Visual Studio.</td></tr>
+        <tr><td class="h">Advanced Training</td><td></td></tr>
+        <tr><td>Momentum SGD</td><td>Momentum (0–95%) for faster convergence. Set in AI Creator or Trainer.</td></tr>
+        <tr><td>LR Decay</td><td>Learning rate decay per epoch (50–100%). Prevents oscillation near minimum.</td></tr>
+        <tr><td>Validation split</td><td>Reserve 5–50% of dataset for validation. Tracks val loss to detect overfitting.</td></tr>
+        <tr><td>Circle dataset</td><td>Non-linear 2D classification: points inside/outside a circle. <code>DS GEN CIRCLE</code> generates 100 samples.</td></tr>
+        <tr><td>AI Creator v3</td><td>Configure Momentum, LR Decay, Val %, Dataset type (XOR/AND/OR/Circle). Creates net + dataset + opens trainer.</td></tr>
+        <tr><td>Trainer enhanced</td><td>Loss graph + Mu + Decay + Val loss display. Step training with <kbd>T</kbd>, auto mode with <kbd>A</kbd>.</td></tr>
+        <tr><td>Boot HDD</td><td>Bootloader reads kernel by dynamic sector count (patched at build time). Supports HDD + partition table.</td></tr>
+        <tr><td>Libc API</td><td>Standard libc functions available to apps: printf, malloc, string ops, via kernel_api_t pointer.</td></tr>
       </table>
     </div>
   </section>
 
   <section class="section" id="build">
     <h2>Build from Source</h2>
-    <p>Requires a cross-compiler (<code>i686-linux-musl-gcc</code>), NASM, Python 3, and Linux/WSL.</p>
-    <pre class="code-block"><span class="prompt">$</span> git clone &lt;repo-url&gt; kronos
-<span class="prompt">$</span> cd kronos
-<span class="prompt">$</span> bash build_full.sh</pre>
-    <p>The script compiles the kernel, assembles the bootloader, and produces <code>cortexos.img</code>.</p>
+    <p>Requires <strong>i686 cross-compiler</strong> (e.g. <code>i686-linux-musl-gcc</code>), NASM, and Python 3. On Windows 10+, just run <code>build.bat</code>.</p>
+    <pre class="code-block"><span class="prompt">$</span> git clone https://github.com/Colibecas/kronos cortexos
+<span class="prompt">$</span> cd cortexos
+<span class="prompt">$</span> bash build_full.sh       # Linux / WSL
+<span class="prompt">&gt;</span> build.bat                # Windows</pre>
+    <p>The script compiles the kernel (~187KB), assembles the bootloader, and produces <code>cortexos.img</code>.</p>
   </section>
 
   <section class="section" id="reviews">
     <h2>Report Bugs / Leave Feedback</h2>
     <p style="color:#888;font-size:13px;margin-bottom:16px;">Found a bug or have a suggestion? Let us know below.</p>
 
-    <form id="review-form" class="review-form" action="https://api.web3forms.com/submit" method="POST" target="review-iframe" onsubmit="showThanks()">
-      <input type="hidden" name="access_key" value="837dbd7f-bce4-4cdf-ac93-8aff250476c8">
+    <form id="review-form" class="review-form" onsubmit="submitReview(event)">
+      <input type="hidden" name="access_key" id="ak" value="837dbd7f-bce4-4cdf-ac93-8aff250476c8">
       <input type="hidden" name="subject" value="New KronOS Review">
 
       <div class="form-row">
@@ -254,21 +268,37 @@
         <label for="message">Review</label>
         <textarea name="message" id="message" rows="4" placeholder="Write your review here..." required></textarea>
       </div>
-      <button type="submit" class="btn btn-primary">Submit Review</button>
+      <button type="submit" class="btn btn-primary" id="submit-btn">Submit Review</button>
       <div id="review-thanks" style="display:none;color:#50c8ff;font-size:14px;margin-top:12px;">Thanks! Your review was sent.</div>
+      <div id="review-error" style="display:none;color:#f44;font-size:14px;margin-top:12px;">Error sending review. Try again later.</div>
     </form>
-    <iframe name="review-iframe" style="display:none"></iframe>
   </section>
 
   <footer>
-    <p>KronOS v0.2 &mdash; x86 32-bit Protected Mode OS</p>
+    <p>CortexOS v2.5 &mdash; x86 32-bit &mdash; FPU Neural Net &bull; TCP/IP &bull; VESA &bull; Audio &bull; Apps</p>
   </footer>
 </div>
 
 <script>
-function showThanks() {
-  document.getElementById('review-thanks').style.display = 'block';
-  document.getElementById('review-form').reset();
+async function submitReview(e) {
+  e.preventDefault();
+  var btn = document.getElementById('submit-btn');
+  btn.disabled = true; btn.textContent = 'Sending...';
+  var data = new FormData(document.getElementById('review-form'));
+  try {
+    var r = await fetch('https://api.web3forms.com/submit', { method:'POST', body:data });
+    var j = await r.json();
+    if (j.success) {
+      document.getElementById('review-thanks').style.display = 'block';
+      document.getElementById('review-error').style.display = 'none';
+      document.getElementById('review-form').reset();
+    } else {
+      document.getElementById('review-error').style.display = 'block';
+    }
+  } catch(e) {
+    document.getElementById('review-error').style.display = 'block';
+  }
+  btn.disabled = false; btn.textContent = 'Submit Review';
 }
 </script>
 </body>

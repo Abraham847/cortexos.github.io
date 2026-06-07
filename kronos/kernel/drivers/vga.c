@@ -8,9 +8,7 @@ void vga_putpixel(int x, int y, u8 col) {
 }
 
 void vga_fill(u8 col) {
-    u8 *fb = (u8*)(int)vga_fb_addr;
-    u32 total = (u32)vga_height * vga_pitch;
-    for (u32 i = 0; i < total; i++) fb[i] = col;
+    memset((void*)(int)vga_fb_addr, col, (u32)vga_height * vga_pitch);
 }
 
 void vga_drawrect(int x, int y, int w, int h, u8 col) {
@@ -32,8 +30,7 @@ void vga_fillrect(int x, int y, int w, int h, u8 col) {
     if (w <= 0 || h <= 0) return;
     u8 *fb = (u8*)(int)vga_fb_addr;
     for (int j = 0; j < h; j++)
-        for (int i = 0; i < w; i++)
-            fb[(u32)(y + j) * vga_pitch + x + i] = col;
+        memset(fb + (u32)(y + j) * vga_pitch + x, col, w);
 }
 
 void vga_drawcircle(int cx, int cy, int r, u8 col) {
@@ -61,8 +58,8 @@ void vga_drawchar(int x, int y, u8 c, u8 fg, u8 bg) {
 void vga_drawstring(int x, int y, const char *s, u8 fg, u8 bg) {
     while (*s) {
         vga_drawchar(x, y, *s, fg, bg);
-        x += 9;
-        if (x + 9 > (int)vga_width) { x = 0; y += 10; }
+        x += 8;
+        if (x + 8 > (int)vga_width) { x = 0; y += 9; }
         s++;
     }
 }

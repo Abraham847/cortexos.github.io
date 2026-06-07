@@ -1,7 +1,7 @@
 #ifndef FS_H
 #define FS_H
 
-#include "kernel.h"
+#include "core.h"
 
 #define FS_ATTR_DIR    0x10
 #define FS_ATTR_HIDDEN 0x02

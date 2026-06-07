@@ -1,7 +1,8 @@
 #ifndef KERNEL_API_H
 #define KERNEL_API_H
 
-#include "kernel.h"
+#include "core.h"
+#include "window.h"
 
 typedef struct {
     void (*putpixel)(int x, int y, u8 col);
@@ -28,6 +29,8 @@ typedef struct {
     void *(*kmalloc)(unsigned size);
     void (*kfree)(void *ptr);
     void (*vga_setpalette)(int idx, int r, int g, int b);
+    int  (*screensize_x)(void);
+    int  (*screensize_y)(void);
 } kernel_api_t;
 
 extern const kernel_api_t kernel_api;

@@ -88,28 +88,32 @@ enable_a20:
     ret
 
 detect_vbe:
-    mov ax, 0x4F00
-    mov di, 0x5000
-    int 0x10
-    cmp ax, 0x004F
-    jne .fallback
+    pusha
+    mov word [.mode_idx], 0
+.try_next:
+    mov si, .mode_table
+    xor ax, ax
+    mov al, [.mode_idx]
+    add si, ax
+    mov cx, [si]
+    cmp cx, 0xFFFF
+    je .fallback
 
-    mov cx, 0x0101
     mov ax, 0x4F01
     mov di, 0x5100
     int 0x10
     cmp ax, 0x004F
-    jne .fallback
+    jne .next_mode
 
     test byte [0x5100], 0x80
-    jz .fallback
+    jz .next_mode
 
-    mov bx, 0x0101
+    mov bx, cx
     or bx, 0x4000
     mov ax, 0x4F02
     int 0x10
     cmp ax, 0x004F
-    jne .fallback
+    jne .next_mode
 
     mov ax, [0x5112]
     mov [VBE_INFO_ADDR], ax
@@ -122,10 +126,19 @@ detect_vbe:
     mov eax, [0x5128]
     mov [VBE_INFO_ADDR + 8], eax
     mov byte [VBE_INFO_ADDR + 7], 1
+    popa
     ret
+.next_mode:
+    inc byte [.mode_idx]
+    jmp .try_next
 .fallback:
     mov byte [VBE_INFO_ADDR + 7], 0
+    popa
     ret
+
+.mode_table:
+    dw 0x0105, 0x0103, 0x0101, 0xFFFF
+.mode_idx: db 0
 
 gdt_start:   dq 0
 gdt_code:    dw 0xFFFF, 0
@@ -146,9 +159,16 @@ pmode_init:
     mov fs, ax
     mov gs, ax
     mov ss, ax
-    mov esp, 0x90000
+    mov esp, 0x100000
 
     call detect_cpu
+
+    ; Enable FPU
+    mov eax, cr0
+    and eax, 0xFFFFFFFB
+    or eax, 0x22
+    mov cr0, eax
+    fninit
 
     cld
     mov edi, __bss_start
