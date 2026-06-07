@@ -4,8 +4,8 @@
 #include "sysmon.h"
 #include "fman.h"
 
-#define ICON_N 5
-static const char *icon_names[ICON_N] = {"Term", "Files", "AI", "Neural", "Mon"};
+#define ICON_N 6
+static const char *icon_names[ICON_N] = {"Term", "Files", "AI", "Neural", "Mon", "Exit"};
 static int icon_sel;
 static int desktop_dirty = 1;
 
@@ -53,12 +53,22 @@ void desktop_draw(void) {
     vga_fillrect(1, bar_y + 1, vga_width - 2, 11, 2);
     vga_drawstring(5, bar_y + 2, "[Menu]", 5, 2);
     vga_drawstring(55, bar_y + 2, tr(S_KRONOS), 7, 2);
-    itoa(timer_ticks / 100, buf);
-    vga_drawstring(100, bar_y + 2, tr(S_UPTIME), 8, 2);
-    vga_drawstring(130, bar_y + 2, buf, 11, 2);
-    vga_drawstring(155, bar_y + 2, "s", 8, 2);
 
-    if (vga_width >= 640) vga_drawstring(180, bar_y + 2, "x86 32bit PMode", 8, 2);
+    /* Show logged-in user */
+    if (logged_in_user[0]) {
+        vga_drawstring(100, bar_y + 2, "User:", 8, 2);
+        vga_drawstring(130, bar_y + 2, logged_in_user, 15, 2);
+    }
+
+    itoa(timer_ticks / 100, buf);
+    vga_drawstring(170, bar_y + 2, tr(S_UPTIME), 8, 2);
+    vga_drawstring(205, bar_y + 2, buf, 11, 2);
+    vga_drawstring(230, bar_y + 2, "s", 8, 2);
+
+    if (vga_width >= 640) vga_drawstring(260, bar_y + 2, "x86 32bit PMode", 8, 2);
+
+    /* "Logout" in taskbar */
+    vga_drawstring(vga_width - 60, bar_y + 2, "Logout", 12, 2);
 }
 
 void desktop_click(int mx, int my) {
@@ -66,6 +76,8 @@ void desktop_click(int mx, int my) {
     if (my >= bar_y) {
         if (mx < 50) {
             sysmon_open();
+        } else if (mx >= vga_width - 60 && mx < vga_width) {
+            do_logout();
         } else {
             wm_create(20, 30, 180, 100, tr(S_TERMINAL), shell_draw, shell_keypress, 0);
         }
@@ -79,6 +91,7 @@ void desktop_click(int mx, int my) {
                 case 2: ai_open_trainer(0); break;
                 case 3: ai_open_editor(0); break;
                 case 4: sysmon_open(); break;
+                case 5: do_logout(); break;
             }
         }
     }

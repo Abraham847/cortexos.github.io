@@ -140,5 +140,8 @@ void paint_click(int id, int mx, int my);
 
 void sysmon_open(void);
 void fman_open(void);
+void do_logout(void);
+
+extern char logged_in_user[16];
 
 #endif

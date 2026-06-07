@@ -1,6 +1,7 @@
 @echo off
 setlocal
 set NASM=%TEMP%\nasm\nasm-2.16.01\nasm.exe
+set NASM_WSL=/mnt/c/Users/Colibecas/AppData/Local/Temp/nasm/nasm-2.16.01/nasm.exe
 set GCC=~/gcc-cross/bin/i686-linux-musl-gcc
 set SRC=%CD%
 set WDIR=/mnt/c/Users/Colibecas/Desktop/ios/kronos
@@ -8,13 +9,13 @@ set WDIR=/mnt/c/Users/Colibecas/Desktop/ios/kronos
 echo === Building CortexOS (restructured) ===
 
 echo [1/5] Bootloader...
-wsl bash -c "cd '%WDIR%' && /tmp/nasm -f bin boot/boot.asm -o boot.bin"
+wsl bash -c "cd '%WDIR%' && %NASM_WSL% -f bin boot/boot.asm -o boot.bin"
 if errorlevel 1 exit /b 1
 
 echo [2/5] Assembly stubs...
-wsl bash -c "cd '%WDIR%/kernel' && /tmp/nasm -f elf32 entry.asm -o entry.o"
+wsl bash -c "cd '%WDIR%/kernel' && %NASM_WSL% -f elf32 entry.asm -o entry.o"
 if errorlevel 1 exit /b 1
-wsl bash -c "cd '%WDIR%/kernel' && /tmp/nasm -f elf32 isr.asm -o isr.o"
+wsl bash -c "cd '%WDIR%/kernel' && %NASM_WSL% -f elf32 isr.asm -o isr.o"
 if errorlevel 1 exit /b 1
 
 echo [3/5] C kernel...

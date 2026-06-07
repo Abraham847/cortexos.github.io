@@ -66,6 +66,8 @@ extern u8 __bss_start[], __bss_end[];
 
 void ai_bg_task(void);
 
+char logged_in_user[16] = {0};
+
 static int lw(const char *s) { return strlen(s) * 9; }
 
 static int rlbl(const char *s, int x, int y, u8 fg) {
@@ -73,59 +75,151 @@ static int rlbl(const char *s, int x, int y, u8 fg) {
     return x + lw(s) + 5;
 }
 
-static void read_pw(char *buf, int max, int x, int y) {
+static void read_str(char *buf, int max, int x, int y, int mask) {
     int bi = 0;
     while (1) {
         int c = kb_getchar();
         if (c == 13) { buf[bi] = 0; return; }
-        if (c == 8 && bi > 0) { bi--; vga_drawchar(x + bi * 9, y, ' ', 7, 1); }
-        else if (c >= 32 && bi < max - 1) { buf[bi++] = c; vga_drawchar(x + (bi-1) * 9, y, '*', 10, 1); }
+        if (c == 8 && bi > 0) {
+            bi--;
+            vga_drawchar(x + bi * 9, y, ' ', 7, 1);
+        }
+        else if (c >= 32 && bi < max - 1) {
+            buf[bi++] = c;
+            vga_drawchar(x + (bi-1) * 9, y, mask ? '*' : c, mask ? 10 : 15, 1);
+        }
     }
 }
 
+static int read_all_users(char users[8][16], char passes[8][16]) {
+    char buf[512];
+    int n = fs_read("USERS.TXT", (u8*)buf, 512);
+    if (n <= 0) return 0;
+    buf[n] = 0;
+    int count = 0, pos = 0;
+    while (buf[pos] && count < 8) {
+        int ni = 0;
+        while (buf[pos] && buf[pos] != ':' && ni < 15)
+            users[count][ni++] = buf[pos++];
+        if (buf[pos] == ':') pos++;
+        int pi = 0;
+        while (buf[pos] && buf[pos] != 13 && buf[pos] != 10 && pi < 15)
+            passes[count][pi++] = buf[pos++];
+        users[count][ni] = 0;
+        passes[count][pi] = 0;
+        if (ni > 0) count++;
+        while (buf[pos] == 13 || buf[pos] == 10) pos++;
+    }
+    return count;
+}
+
+static int write_all_users(char users[8][16], char passes[8][16], int count) {
+    char buf[512];
+    int pos = 0;
+    for (int i = 0; i < count; i++) {
+        if (pos > 500) break;
+        int j;
+        for (j = 0; users[i][j] && pos < 510; j++) buf[pos++] = users[i][j];
+        if (pos < 511) buf[pos++] = ':';
+        for (j = 0; passes[i][j] && pos < 510; j++) buf[pos++] = passes[i][j];
+        if (pos < 511) { buf[pos++] = 13; buf[pos++] = 10; }
+    }
+    if (pos > 0) return fs_write("USERS.TXT", buf, pos);
+    return 0;
+}
+
 static void do_login(void) {
-    char stored[16] = {0};
-    int has_pw;
+    char users_tbl[8][16], passes_tbl[8][16];
+    int user_count;
     while (kb_keypressed()) kb_getchar();
 
-    has_pw = fs_read("PASS.SYS", (u8*)stored, 15) > 0;
-    if (has_pw) {
-        int sl = strlen(stored);
-        while (sl > 0 && (stored[sl-1] == '\n' || stored[sl-1] == '\r')) stored[--sl] = 0;
-    }
-
-    if (!has_pw) {
+    user_count = read_all_users(users_tbl, passes_tbl);
+    if (user_count == 0) {
+        /* First-time: create initial user */
         int cx = vga_width/2, cy = vga_height/2;
         vga_fill(1);
-        vga_drawstring(cx - lw(tr(S_FIRST_SETUP))/2, cy-25, tr(S_FIRST_SETUP), 14, 1);
-        int ix = rlbl(tr(S_CREATE_PASS), cx-70, cy-5, 7);
-        char a[16], b[16];
-        read_pw(a, 16, ix, cy-5);
-        ix = rlbl(tr(S_AGAIN), cx-70, cy+10, 7);
-        read_pw(b, 16, ix, cy+10);
-        if (strcmp(a, b) != 0 || strlen(a) < 1) {
-            vga_drawstring(cx - lw(tr(S_MISMATCH))/2, cy+30, tr(S_MISMATCH), 12, 1);
+        vga_drawstring(cx - lw(tr(S_FIRST_SETUP))/2, cy-35, tr(S_FIRST_SETUP), 14, 1);
+        vga_drawstring(cx - lw("CREATE ADMIN USER")/2, cy-20, "CREATE ADMIN USER", 11, 1);
+        int ix = rlbl("User:", cx-70, cy-5, 7);
+        char uname[16], a[16], b[16];
+        read_str(uname, 16, ix, cy-5, 0);
+        ix = rlbl("Pass:", cx-70, cy+10, 7);
+        read_str(a, 16, ix, cy+10, 1);
+        ix = rlbl("Again:", cx-70, cy+25, 7);
+        read_str(b, 16, ix, cy+25, 1);
+        if (strcmp(a, b) != 0 || strlen(a) < 1 || strlen(uname) < 1) {
+            vga_drawstring(cx - lw(tr(S_MISMATCH))/2, cy+45, tr(S_MISMATCH), 12, 1);
             kb_getchar();
             return do_login();
         }
-        fs_write("PASS.SYS", (const u8*)a, strlen(a));
-        memcpy(stored, a, 16);
+        int i;
+        for (i = 0; uname[i]; i++) users_tbl[0][i] = uname[i];
+        users_tbl[0][i] = 0;
+        for (i = 0; a[i]; i++) passes_tbl[0][i] = a[i];
+        passes_tbl[0][i] = 0;
+        user_count = 1;
+        write_all_users(users_tbl, passes_tbl, 1);
+        for (i = 0; uname[i]; i++) logged_in_user[i] = uname[i];
+        logged_in_user[i] = 0;
+        vga_fill(1);
+        return;
     }
 
     int attempts = 3;
     while (attempts > 0) {
         int cx = vga_width/2, cy = vga_height/2;
         vga_fill(1);
-        vga_drawstring(cx - lw(tr(S_KRONOS))/2, cy-30, tr(S_KRONOS), 14, 1);
-        vga_drawstring(cx - lw(tr(S_LOGIN))/2, cy-15, tr(S_LOGIN), 11, 1);
-        int ix = rlbl(tr(S_PASS), cx-60, cy+5, 7);
-        char buf[16];
-        read_pw(buf, 16, ix, cy+5);
-        if (strcmp(buf, stored) == 0) { vga_fill(1); return; }
+        vga_drawstring(cx - lw(tr(S_KRONOS))/2, cy-45, tr(S_KRONOS), 14, 1);
+        vga_drawstring(cx - lw(tr(S_LOGIN))/2, cy-30, tr(S_LOGIN), 11, 1);
+
+        /* List users */
+        vga_drawstring(cx - 80, cy - 18, "Users:", 7, 1);
+        for (int u = 0; u < user_count; u++) {
+            vga_drawstring(cx - 80 + (u % 4) * 48, cy - 8 + (u / 4) * 10, users_tbl[u], 11, 1);
+        }
+
+        int ix = rlbl("User:", cx-70, cy+10, 7);
+        char uname[16];
+        read_str(uname, 16, ix, cy+10, 0);
+
+        /* Find user */
+        int found = -1;
+        for (int u = 0; u < user_count; u++) {
+            int eq = 1;
+            for (int j = 0; users_tbl[u][j] || uname[j]; j++)
+                if (users_tbl[u][j] != uname[j]) { eq = 0; break; }
+            if (eq) { found = u; break; }
+        }
+        if (found < 0) {
+            attempts--;
+            vga_drawstring(cx - lw("User not found")/2, cy+30, "User not found", 12, 1);
+            if (attempts > 0) {
+                vga_drawstring(cx - lw(tr(S_ANY_KEY))/2, cy+40, tr(S_ANY_KEY), 8, 1);
+                kb_getchar();
+                while (kb_keypressed()) kb_getchar();
+            }
+            continue;
+        }
+
+        ix = rlbl("Pass:", cx-70, cy+22, 7);
+        char pass[16];
+        read_str(pass, 16, ix, cy+22, 1);
+
+        int match = 1;
+        for (int j = 0; passes_tbl[found][j] || pass[j]; j++)
+            if (passes_tbl[found][j] != pass[j]) { match = 0; break; }
+
+        if (match) {
+            int j;
+            for (j = 0; uname[j]; j++) logged_in_user[j] = uname[j];
+            logged_in_user[j] = 0;
+            vga_fill(1);
+            return;
+        }
         attempts--;
-        vga_drawstring(cx - lw(tr(S_INCORRECT))/2, cy+25, tr(S_INCORRECT), 12, 1);
+        vga_drawstring(cx - lw(tr(S_INCORRECT))/2, cy+36, tr(S_INCORRECT), 12, 1);
         if (attempts > 0) {
-            vga_drawstring(cx - lw(tr(S_ANY_KEY))/2, cy+35, tr(S_ANY_KEY), 8, 1);
+            vga_drawstring(cx - lw(tr(S_ANY_KEY))/2, cy+46, tr(S_ANY_KEY), 8, 1);
             kb_getchar();
             while (kb_keypressed()) kb_getchar();
         }
@@ -133,6 +227,21 @@ static void do_login(void) {
     vga_fill(0);
     vga_drawstring(vga_width/2 - lw(tr(S_LOCKED))/2, vga_height/2-4, tr(S_LOCKED), 12, 1);
     while (1) __asm__ volatile("hlt");
+}
+
+void do_logout(void) {
+    logged_in_user[0] = 0;
+    wm_init();
+    desktop_init();
+    do_login();
+    shell_init();
+    ai_init();
+    ipc_init();
+    model_init();
+    aidemo_init();
+    edit_init();
+    forth_init();
+    paint_init();
 }
 
 void kmain(void) {
